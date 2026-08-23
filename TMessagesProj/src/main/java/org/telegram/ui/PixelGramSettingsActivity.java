@@ -23,6 +23,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApiCredentials;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.PixelGramUpdateChecker;
 import org.telegram.messenger.R;
@@ -590,7 +591,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 case TYPE_INFO: {
                     if (position == updateInfoRow) {
                         TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
-                        cell.setText("Current version: " + currentVersionName() + "\nLast checked: " + formatLastCheck(PixelGramSettings.getLastUpdateCheckMs()));
+                        cell.setText("PixelGram version: " + BuildVars.PIXELGRAM_VERSION
+                                + "\nBased on Telegram: " + currentVersionName()
+                                + "\nLast checked: " + formatLastCheck(PixelGramSettings.getLastUpdateCheckMs()));
                     }
                     break;
                 }

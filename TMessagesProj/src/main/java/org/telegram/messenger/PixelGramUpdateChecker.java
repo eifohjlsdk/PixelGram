@@ -1,7 +1,6 @@
 package org.telegram.messenger;
 
 import android.content.Context;
-import android.content.pm.PackageInfo;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.os.Build;
@@ -57,8 +56,7 @@ public class PixelGramUpdateChecker {
                     // Only reset the 30-day window on an actual completed check, not a
                     // network failure - a transient failure shouldn't cost a month's wait.
                     PixelGramSettings.setLastUpdateCheckMs(System.currentTimeMillis());
-                    String currentVersion = getInstalledVersionName();
-                    boolean isNewer = currentVersion != null && !SharedConfig.versionBiggerOrEqual(currentVersion, result.version);
+                    boolean isNewer = isNewerVersion(result.version, BuildVars.PIXELGRAM_VERSION);
                     if (isNewer) {
                         PixelGramSettings.setLastSeenVersion(result.version);
                         showUpdateBulletin(result);
@@ -121,13 +119,51 @@ public class PixelGramUpdateChecker {
         }
     }
 
-    private static String getInstalledVersionName() {
-        try {
-            PackageInfo info = ApplicationLoader.applicationContext.getPackageManager().getPackageInfo(ApplicationLoader.applicationContext.getPackageName(), 0);
-            return info.versionName;
-        } catch (Exception e) {
+    /** True if candidate (a GitHub release tag) is a newer dot-separated version than current
+     * (BuildVars.PIXELGRAM_VERSION). Strips a leading v/V, pads missing trailing segments with
+     * 0 so "1.2" == "1.2.0", and - since this is comparing an external tag, not a value we
+     * control - falls back to "not newer" (never crashes, never notifies spuriously) if either
+     * side doesn't parse as dot-separated integers, logging the bad value. */
+    private static boolean isNewerVersion(String candidate, String current) {
+        int[] a = parseVersion(candidate);
+        int[] b = parseVersion(current);
+        if (a == null || b == null) {
+            return false;
+        }
+        int len = Math.max(a.length, b.length);
+        for (int i = 0; i < len; i++) {
+            int va = i < a.length ? a[i] : 0;
+            int vb = i < b.length ? b[i] : 0;
+            if (va != vb) {
+                return va > vb;
+            }
+        }
+        return false;
+    }
+
+    private static int[] parseVersion(String version) {
+        if (version == null) {
             return null;
         }
+        String s = version.trim();
+        if (!s.isEmpty() && (s.charAt(0) == 'v' || s.charAt(0) == 'V')) {
+            s = s.substring(1);
+        }
+        if (s.isEmpty()) {
+            FileLog.e("PixelGramUpdateChecker: empty version string");
+            return null;
+        }
+        String[] parts = s.split("\\.");
+        int[] nums = new int[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            try {
+                nums[i] = Integer.parseInt(parts[i].trim());
+            } catch (NumberFormatException e) {
+                FileLog.e("PixelGramUpdateChecker: not a dot-separated integer version: " + version);
+                return null;
+            }
+        }
+        return nums;
     }
 
     private static boolean isUnmeteredConnection() {
