@@ -83,7 +83,7 @@ PixelGram is, like upstream Telegram for Android, licensed under the
 **GNU General Public License v2.0**. See [`LICENSE`](LICENSE) for the full
 text. Source code is available at:
 
-**https://github.com/eifohjlsdk/telegram-pixel**
+**https://github.com/eifohjlsdk/PixelGram**
 
 ## Installing (sideloaded APK)
 
@@ -98,7 +98,7 @@ and it needs your own Telegram API credentials:
    way - PixelGram doesn't ship a shared credential like some forks do, so
    each install uses its own. It's free and takes under a minute.
 2. Download the latest release APK from the
-   [Releases page](https://github.com/eifohjlsdk/telegram-pixel/releases).
+   [Releases page](https://github.com/eifohjlsdk/PixelGram/releases).
 3. On your device, allow your browser or file manager to install unknown
    apps (Settings → Apps → Special app access → Install unknown apps).
    **Android Play Protect will likely warn you about installing an app from

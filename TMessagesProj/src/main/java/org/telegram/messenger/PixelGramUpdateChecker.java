@@ -28,8 +28,8 @@ import java.nio.charset.StandardCharsets;
 public class PixelGramUpdateChecker {
 
     // Single constant, easy to point at a different fork/repo later.
-    public static final String REPO_URL = "https://github.com/eifohjlsdk/telegram-pixel";
-    private static final String API_URL = "https://api.github.com/repos/eifohjlsdk/telegram-pixel/releases/latest";
+    public static final String REPO_URL = "https://github.com/eifohjlsdk/PixelGram";
+    private static final String API_URL = "https://api.github.com/repos/eifohjlsdk/PixelGram/releases/latest";
     private static final long CHECK_INTERVAL_MS = 30L * 24 * 60 * 60 * 1000;
 
     public interface OnCheckDone {
