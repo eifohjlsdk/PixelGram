@@ -38,12 +38,18 @@ public class ApiCredentials {
      * only consumers are Java-side login flows, so an in-memory update alone is enough for it;
      * BuildVars.APP_ID also feeds a native init call made once per process at startup, so a
      * caller changing api_id still needs to restart the process for the native layer to see it -
-     * see ApiCredentialsSetupActivity/PixelGramSettingsActivity's restart-after-save). */
+     * see ApiCredentialsSetupActivity/PixelGramSettingsActivity's restart-after-save).
+     *
+     * Uses commit() rather than apply(): callers immediately hard-restart the process
+     * (Runtime.exit()) right after this returns, and apply()'s write is asynchronous - it can
+     * still be pending when the process dies, racing against the new process starting up and
+     * reading stale prefs. commit() blocks until the write is durable, so the restart is
+     * guaranteed to see it. */
     public static void setCredentials(int apiId, String apiHash) {
         prefs().edit()
                 .putInt(KEY_API_ID, apiId)
                 .putString(KEY_API_HASH, apiHash)
-                .apply();
+                .commit();
         BuildVars.APP_ID = apiId;
         BuildVars.APP_HASH = apiHash;
     }
