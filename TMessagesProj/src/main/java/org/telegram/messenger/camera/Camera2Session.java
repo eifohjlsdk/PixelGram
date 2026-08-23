@@ -850,10 +850,24 @@ public class Camera2Session {
                 // Face-AE metering setting only gates whether the tracked face rect drives
                 // CONTROL_AE_REGIONS - it doesn't gate face detection or exposure compensation
                 // above, so all four (metering x face-present) combinations stay testable.
-                if (maxRegionsAe > 0 && currentFaceAeRect != null && PixelGramSettings.isFaceAeMeteringEnabled()) {
+                //
+                // Always set this key explicitly, every call, rather than only setting it when
+                // a face is present - omitting it on face-loss relied on a fresh
+                // createCaptureRequest() builder resetting AE_REGIONS to a full-frame default on
+                // its own, which isn't guaranteed: some HALs treat 3A metering regions as
+                // persistent algorithm state that only changes when a request explicitly sets a
+                // new value, so a request that never mentions the key can leave the HAL still
+                // metering the last face position even after currentFaceAeRect goes back to
+                // null. An empty array is the documented way to clear metering regions.
+                if (maxRegionsAe > 0) {
                     try {
-                        MeteringRectangle meteringRect = new MeteringRectangle(currentFaceAeRect, MeteringRectangle.METERING_WEIGHT_MAX);
-                        captureRequestBuilder.set(CaptureRequest.CONTROL_AE_REGIONS, new MeteringRectangle[]{meteringRect});
+                        MeteringRectangle[] regions;
+                        if (currentFaceAeRect != null && PixelGramSettings.isFaceAeMeteringEnabled()) {
+                            regions = new MeteringRectangle[]{new MeteringRectangle(currentFaceAeRect, MeteringRectangle.METERING_WEIGHT_MAX)};
+                        } else {
+                            regions = new MeteringRectangle[0];
+                        }
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_AE_REGIONS, regions);
                     } catch (Exception e) {
                         PixelCameraLog.w("camera #" + cameraId + ": CONTROL_AE_REGIONS set failed", e);
                     }
