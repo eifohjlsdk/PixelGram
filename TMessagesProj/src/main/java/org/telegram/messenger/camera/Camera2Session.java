@@ -872,14 +872,23 @@ public class Camera2Session {
                 // persistent algorithm state that only changes when a request explicitly sets a
                 // new value, so a request that never mentions the key can leave the HAL still
                 // metering the last face position even after currentFaceAeRect goes back to
-                // null. An empty array is the documented way to clear metering regions.
-                if (maxRegionsAe > 0) {
+                // null.
+                //
+                // The "clear" case is a single full-frame region at weight 0, not an empty
+                // array: an empty MeteringRectangle[] is documented for the *request* to mean
+                // "clear," but at least some devices reject it outright when actually applied via
+                // setRepeatingRequest() (IllegalArgumentException at
+                // CameraCaptureSessionImpl.setRepeatingRequest immediately after session
+                // creation). A weight-0 region spanning the whole active array is accepted
+                // everywhere and is AE-neutral - weight 0 means "don't bias toward this region,"
+                // and it covers the same area a default/no-region request would meter anyway.
+                if (maxRegionsAe > 0 && sensorSize != null) {
                     try {
                         MeteringRectangle[] regions;
                         if (currentFaceAeRect != null && PixelGramSettings.isFaceAeMeteringEnabled()) {
                             regions = new MeteringRectangle[]{new MeteringRectangle(currentFaceAeRect, MeteringRectangle.METERING_WEIGHT_MAX)};
                         } else {
-                            regions = new MeteringRectangle[0];
+                            regions = new MeteringRectangle[]{new MeteringRectangle(sensorSize, 0)};
                         }
                         captureRequestBuilder.set(CaptureRequest.CONTROL_AE_REGIONS, regions);
                     } catch (Exception e) {
