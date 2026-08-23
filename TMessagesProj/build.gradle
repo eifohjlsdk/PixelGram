@@ -156,6 +156,12 @@ android {
             buildConfigField "boolean", "DEBUG_PRIVATE_VERSION", "true"
             buildConfigField "boolean", "BUNDLE", "false"
             buildConfigField "int", "VERSION_NUM", "0"
+            // Debug-only convenience: local.credentials.properties (gitignored) can supply
+            // api_id/api_hash so they don't need re-entering on every debug reinstall.
+            // Release/standalone builds never get these fields - they always use the
+            // runtime ApiCredentials/setup-screen path.
+            buildConfigField "int", "DEBUG_API_ID", getCredentialProps("api_id", "0")
+            buildConfigField "String", "DEBUG_API_HASH", "\"" + getCredentialProps("api_hash", "") + "\""
         }
 
         HA_private {
@@ -172,6 +178,8 @@ android {
             buildConfigField "boolean", "DEBUG_PRIVATE_VERSION", "true"
             buildConfigField "boolean", "BUNDLE", "false"
             buildConfigField "int", "VERSION_NUM", "1"
+            buildConfigField "int", "DEBUG_API_ID", "0"
+            buildConfigField "String", "DEBUG_API_HASH", "\"\""
         }
 
         HA_public {
@@ -188,6 +196,8 @@ android {
             buildConfigField "boolean", "DEBUG_PRIVATE_VERSION", "false"
             buildConfigField "boolean", "BUNDLE", "false"
             buildConfigField "int", "VERSION_NUM", "4"
+            buildConfigField "int", "DEBUG_API_ID", "0"
+            buildConfigField "String", "DEBUG_API_HASH", "\"\""
         }
 
         HA_hardcore {
@@ -204,6 +214,8 @@ android {
             buildConfigField "boolean", "DEBUG_PRIVATE_VERSION", "true"
             buildConfigField "boolean", "BUNDLE", "false"
             buildConfigField "int", "VERSION_NUM", "5"
+            buildConfigField "int", "DEBUG_API_ID", "0"
+            buildConfigField "String", "DEBUG_API_HASH", "\"\""
         }
 
         standalone {
@@ -220,6 +232,8 @@ android {
             buildConfigField "boolean", "DEBUG_PRIVATE_VERSION", "false"
             buildConfigField "boolean", "BUNDLE", "false"
             buildConfigField "int", "VERSION_NUM", "6"
+            buildConfigField "int", "DEBUG_API_ID", "0"
+            buildConfigField "String", "DEBUG_API_HASH", "\"\""
         }
 
         release {
@@ -236,6 +250,8 @@ android {
             buildConfigField "boolean", "DEBUG_PRIVATE_VERSION", "false"
             buildConfigField "boolean", "BUNDLE", "false"
             buildConfigField "int", "VERSION_NUM", "7"
+            buildConfigField "int", "DEBUG_API_ID", "0"
+            buildConfigField "String", "DEBUG_API_HASH", "\"\""
         }
     }
 
@@ -251,6 +267,19 @@ def getProps(String propName) {
         return props[propName]
     } else {
         return "";
+    }
+}
+
+// Debug-only convenience store for api_id/api_hash - see local.credentials.properties (gitignored).
+def getCredentialProps(String propName, String defaultValue) {
+    def propsFile = rootProject.file('local.credentials.properties')
+    if (propsFile.exists()) {
+        def props = new Properties()
+        props.load(new FileInputStream(propsFile))
+        def value = props[propName]
+        return value == null ? defaultValue : value
+    } else {
+        return defaultValue;
     }
 }
 apply plugin: 'com.google.gms.google-services'

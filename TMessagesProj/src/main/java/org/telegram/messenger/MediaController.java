@@ -44,6 +44,8 @@ import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
+import android.media.audiofx.AutomaticGainControl;
+import android.media.audiofx.NoiseSuppressor;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
@@ -83,6 +85,7 @@ import com.google.android.gms.cast.MediaMetadata;
 import com.google.android.gms.common.images.WebImage;
 
 import org.telegram.messenger.audioinfo.AudioInfo;
+import org.telegram.messenger.camera.PixelGramSettings;
 import org.telegram.messenger.chromecast.ChromecastController;
 import org.telegram.messenger.chromecast.ChromecastFileServer;
 import org.telegram.messenger.chromecast.ChromecastMedia;
@@ -1072,6 +1075,8 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
     private boolean audioRecorderPaused;
     private AudioRecord audioRecorder;
+    private NoiseSuppressor audioNoiseSuppressor;
+    private AutomaticGainControl audioAutomaticGainControl;
     public TLRPC.TL_document recordingAudio;
     private int recordingGuid = -1;
     private int recordingCurrentAccount;
@@ -1122,6 +1127,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 int len = audioRecorder.read(buffer, buffer.capacity());
                 if (len > 0) {
                     buffer.limit(len);
+                    PixelGramSettings.applyMicGain(buffer, len);
                     double sum = 0;
                     try {
                         long newSamplesCount = samplesCount + len / 2;
@@ -4458,6 +4464,47 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
     }
 
+    /** Attaches NoiseSuppressor/AutomaticGainControl to the just-constructed audioRecorder's
+     * session when PixelGramSettings.isAudioEffectsEnabled() - same on/off setting and
+     * isAvailable()-gated pattern as InstantCameraView's round-video recording. */
+    private void attachAudioEffects() {
+        if (!PixelGramSettings.isAudioEffectsEnabled() || audioRecorder == null) {
+            return;
+        }
+        try {
+            int sessionId = audioRecorder.getAudioSessionId();
+            if (NoiseSuppressor.isAvailable()) {
+                audioNoiseSuppressor = NoiseSuppressor.create(sessionId);
+                if (audioNoiseSuppressor != null) {
+                    audioNoiseSuppressor.setEnabled(true);
+                }
+            }
+            if (AutomaticGainControl.isAvailable()) {
+                audioAutomaticGainControl = AutomaticGainControl.create(sessionId);
+                if (audioAutomaticGainControl != null) {
+                    audioAutomaticGainControl.setEnabled(true);
+                }
+            }
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+    }
+
+    private void releaseAudioEffects() {
+        try {
+            if (audioNoiseSuppressor != null) {
+                audioNoiseSuppressor.release();
+                audioNoiseSuppressor = null;
+            }
+            if (audioAutomaticGainControl != null) {
+                audioAutomaticGainControl.release();
+                audioAutomaticGainControl = null;
+            }
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+    }
+
     public void prepareResumedRecording(int currentAccount, MediaDataController.DraftVoice draft, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem replyStory, int guid, SendMessageChatArguments sendMessageChatArguments, long monoForumPeerId, MessageSuggestionParams suggestionParams) {
         manualRecording = false;
         requestRecordAudioFocus(true);
@@ -4507,6 +4554,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 recordingAudioFile.delete();
                 recordingAudioFile = null;
                 try {
+                    releaseAudioEffects();
                     audioRecorder.release();
                     audioRecorder = null;
                 } catch (Exception e2) {
@@ -4624,6 +4672,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 }
                 sendAfterDone = 4;
                 audioRecorder.stop();
+                releaseAudioEffects();
                 audioRecorder.release();
                 audioRecorder = null;
                 recordQueue.postRunnable(() -> {
@@ -4685,7 +4734,8 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         requestRecordAudioFocus(true);
 //                        MediaDataController.getInstance(recordingCurrentAccount).pushDraftVoiceMessage(recordDialogId, recordTopicId, null);
 //
-                        audioRecorder = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                        audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                        attachAudioEffects();
                         recordStartTime = System.currentTimeMillis();
                         writtenFrame = 0;
                         samplesCount = 0;
@@ -4762,7 +4812,8 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 }
 
                 audioRecorderPaused = false;
-                audioRecorder = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                attachAudioEffects();
                 recordStartTime = System.currentTimeMillis();
                 recordTimeCount = 0;
                 writtenFrame = 0;
@@ -4791,6 +4842,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                     recordingPrevAudioFile = null;
                 }
                 try {
+                    releaseAudioEffects();
                     audioRecorder.release();
                     audioRecorder = null;
                 } catch (Exception e2) {
@@ -4944,6 +4996,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
         try {
             if (audioRecorder != null) {
+                releaseAudioEffects();
                 audioRecorder.release();
                 audioRecorder = null;
             }

@@ -26,8 +26,11 @@ public class BuildVars {
     public static boolean NO_SCOPED_STORAGE = Build.VERSION.SDK_INT <= 29;
     public static String BUILD_VERSION_STRING = BuildConfig.BUILD_VERSION_STRING;
 
-    public static int APP_ID = 4;
-    public static String APP_HASH = "014b35b6184100b085b0d0572f9b5103";
+    // Every public Telegram-compatible client needs its own api_id/api_hash from
+    // https://my.telegram.org - this fork doesn't ship one baked in. Populated at runtime
+    // from ApiCredentials below, once ApplicationLoader.applicationContext is available.
+    public static int APP_ID = 0;
+    public static String APP_HASH = "";
 
     // SafetyNet key for Google Identity SDK, set it to empty to disable
     public static String SAFETYNET_KEY = "AIzaSyDqt8P-7F7CPCseMkOiVRgb1LY8RN1bvH8";
@@ -56,6 +59,15 @@ public class BuildVars {
                     }
                 });
             }
+            // Debug convenience: seed the runtime store from local.credentials.properties
+            // (via BuildConfig.DEBUG_API_ID/_HASH) the first time, so debug reinstalls don't
+            // need the setup screen. Release/standalone never have these fields (see
+            // TMessagesProj/build.gradle), so this is a no-op there.
+            if (DEBUG_VERSION && !ApiCredentials.hasCredentials() && BuildConfig.DEBUG_API_ID != 0) {
+                ApiCredentials.setCredentials(BuildConfig.DEBUG_API_ID, BuildConfig.DEBUG_API_HASH);
+            }
+            APP_ID = ApiCredentials.getApiId();
+            APP_HASH = ApiCredentials.getApiHash();
         }
     }
 

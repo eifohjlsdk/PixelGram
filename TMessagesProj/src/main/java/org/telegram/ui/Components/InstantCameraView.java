@@ -34,6 +34,8 @@ import android.hardware.Camera;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
+import android.media.audiofx.AutomaticGainControl;
+import android.media.audiofx.NoiseSuppressor;
 import android.media.AudioTimestamp;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
@@ -91,6 +93,8 @@ import org.telegram.messenger.camera.Camera2Session;
 import org.telegram.messenger.camera.CameraController;
 import org.telegram.messenger.camera.CameraInfo;
 import org.telegram.messenger.camera.CameraSession;
+import org.telegram.messenger.camera.PixelCameraLog;
+import org.telegram.messenger.camera.PixelGramSettings;
 import org.telegram.messenger.camera.Size;
 import org.telegram.messenger.video.MP4Builder;
 import org.telegram.messenger.video.Mp4Movie;
@@ -236,7 +240,20 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
     private View parentView;
     public boolean opened;
 
+    // Resistance applied to the per-move pinch delta (zoom * deltaRatio^exponent), where the
+    // exponent progresses from PINCH_SENSITIVITY_LOW near min zoom to PINCH_SENSITIVITY_HIGH
+    // near the ceiling - precise at low zoom, but the same finger travel produces progressively
+    // larger changes as zoom climbs, so the full usable range is reachable in one gesture.
+    private static final float PINCH_SENSITIVITY_LOW = 0.4f;
+    private static final float PINCH_SENSITIVITY_HIGH = 2.5f;
+    // Progress (t) and the actual applied zoom are both normalized against this instead of the
+    // hardware maxZoom (10x front / 30x rear on this device) - past ~6x at 448px output, digital
+    // zoom is unusable anyway, and normalizing against the hardware max made the rear camera's
+    // curve feel unchanged since the same zoom level maps to a much lower t.
+    private static final float PINCH_ZOOM_CEILING = 6.0f;
+
     float pinchStartDistance;
+    float lastPinchDistance;
 
     float pinchScale;
 
@@ -779,10 +796,11 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             if (bothCameras) {
                 for (int a = 0; a < 2; ++a) {
                     if (camera2Sessions[a] == null) {
-                        camera2Sessions[a] = Camera2Session.create(a == 0, MessagesController.getInstance(UserConfig.selectedAccount).roundVideoSize, MessagesController.getInstance(UserConfig.selectedAccount).roundVideoSize);
+                        camera2Sessions[a] = Camera2Session.create(a == 0, PixelGramSettings.getResolution(), PixelGramSettings.getResolution());
                         if (camera2Sessions[a] != null) {
                             camera2Sessions[a].setRecordingVideo(true);
                             previewSize[a] = new Size(camera2Sessions[a].getPreviewWidth(), camera2Sessions[a].getPreviewHeight());
+                            PixelCameraLog.d("cam" + a + " (" + (a == 0 ? "front" : "rear") + ") pinchZoomCeiling:" + Math.min(camera2Sessions[a].getMaxZoom(), PINCH_ZOOM_CEILING) + " (maxZoom:" + camera2Sessions[a].getMaxZoom() + ")");
                         }
                     }
                 }
@@ -793,11 +811,13 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 }
                 if (camera2SessionCurrent == null) return;
             } else {
-                camera2SessionCurrent = camera2Sessions[isFrontface ? 0 : 1] = Camera2Session.create(isFrontface, MessagesController.getInstance(UserConfig.selectedAccount).roundVideoSize, MessagesController.getInstance(UserConfig.selectedAccount).roundVideoSize);
+                camera2SessionCurrent = camera2Sessions[isFrontface ? 0 : 1] = Camera2Session.create(isFrontface, PixelGramSettings.getResolution(), PixelGramSettings.getResolution());
                 if (camera2SessionCurrent == null) return;
                 camera2SessionCurrent.setRecordingVideo(true);
                 previewSize[0] = new Size(camera2SessionCurrent.getPreviewWidth(), camera2SessionCurrent.getPreviewHeight());
+                PixelCameraLog.d("cam (" + (isFrontface ? "front" : "rear") + ") pinchZoomCeiling:" + Math.min(camera2SessionCurrent.getMaxZoom(), PINCH_ZOOM_CEILING) + " (maxZoom:" + camera2SessionCurrent.getMaxZoom() + ")");
             }
+            PixelCameraLog.d("pinchSensitivityLow:" + PINCH_SENSITIVITY_LOW + " pinchSensitivityHigh:" + PINCH_SENSITIVITY_HIGH);
         }
         textureView = new TextureView(getContext());
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
@@ -1146,7 +1166,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     camera2SessionCurrent = null;
                     camera2Sessions[isFrontface ? 1 : 0] = null;
                 }
-                camera2SessionCurrent = camera2Sessions[isFrontface ? 0 : 1] = Camera2Session.create(isFrontface, MessagesController.getInstance(UserConfig.selectedAccount).roundVideoSize, MessagesController.getInstance(UserConfig.selectedAccount).roundVideoSize);
+                camera2SessionCurrent = camera2Sessions[isFrontface ? 0 : 1] = Camera2Session.create(isFrontface, PixelGramSettings.getResolution(), PixelGramSettings.getResolution());
                 if (camera2SessionCurrent == null) return;
                 camera2SessionCurrent.setRecordingVideo(true);
                 previewSize[0] = new Size(camera2SessionCurrent.getPreviewWidth(), camera2SessionCurrent.getPreviewHeight());
@@ -2186,6 +2206,8 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         private InstantCameraVideoEncoderOverlayHelper overlayHelper;
 
         private AudioRecord audioRecorder;
+        private NoiseSuppressor audioNoiseSuppressor;
+        private AutomaticGainControl audioAutomaticGainControl;
 
         private ArrayBlockingQueue<AudioBufferInfo> buffers = new ArrayBlockingQueue<>(10);
         private ArrayList<Bitmap> keyframeThumbs = new ArrayList<>();
@@ -2238,6 +2260,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         ByteBuffer byteBuffer = buffer.buffer[a];
                         byteBuffer.rewind();
                         readResult = audioRecorder.read(byteBuffer, 2048);
+                        if (readResult > 0) {
+                            PixelGramSettings.applyMicGain(byteBuffer, readResult);
+                        }
                         if (readResult > 0 && a % 2 == 0) {
                             byteBuffer.limit(readResult);
                             double s = 0;
@@ -2295,6 +2320,14 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     }
                 }
                 try {
+                    if (audioNoiseSuppressor != null) {
+                        audioNoiseSuppressor.release();
+                        audioNoiseSuppressor = null;
+                    }
+                    if (audioAutomaticGainControl != null) {
+                        audioAutomaticGainControl.release();
+                        audioAutomaticGainControl = null;
+                    }
                     audioRecorder.release();
                 } catch (Exception e) {
                     FileLog.e(e);
@@ -2314,8 +2347,8 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             }
 
             started = true;
-            int resolution = MessagesController.getInstance(currentAccount).roundVideoSize;
-            int bitrate = MessagesController.getInstance(currentAccount).roundVideoBitrate * 1024;
+            int resolution = PixelGramSettings.getResolution();
+            int bitrate = PixelGramSettings.getVideoBitrate();
             AndroidUtilities.runOnUIThread(() -> {
                 NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.stopAllHeavyOperations, 512);
             });
@@ -3176,7 +3209,26 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 skippedFirst = false;
                 skippedTime = 0;
 
-                audioRecorder = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+                audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+                if (PixelGramSettings.isAudioEffectsEnabled()) {
+                    try {
+                        int sessionId = audioRecorder.getAudioSessionId();
+                        if (NoiseSuppressor.isAvailable()) {
+                            audioNoiseSuppressor = NoiseSuppressor.create(sessionId);
+                            if (audioNoiseSuppressor != null) {
+                                audioNoiseSuppressor.setEnabled(true);
+                            }
+                        }
+                        if (AutomaticGainControl.isAvailable()) {
+                            audioAutomaticGainControl = AutomaticGainControl.create(sessionId);
+                            if (audioAutomaticGainControl != null) {
+                                audioAutomaticGainControl.setEnabled(true);
+                            }
+                        }
+                    } catch (Exception e) {
+                        PixelCameraLog.w("failed to attach audio effects", e);
+                    }
+                }
                 audioRecorder.startRecording();
                 if (BuildVars.LOGS_ENABLED) {
                     FileLog.d("InstantCamera initied audio record with channels " + audioRecorder.getChannelCount() + " sample rate = " + audioRecorder.getSampleRate() + " bufferSize = " + bufferSize);
@@ -3193,7 +3245,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 audioFormat.setString(MediaFormat.KEY_MIME, AUDIO_MIME_TYPE);
                 audioFormat.setInteger(MediaFormat.KEY_SAMPLE_RATE, audioSampleRate);
                 audioFormat.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
-                audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, MessagesController.getInstance(currentAccount).roundAudioBitrate * 1024);
+                audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, PixelGramSettings.getAudioBitrate());
                 audioFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2048 * AudioBufferInfo.MAX_SAMPLES);
 
                 audioEncoder = MediaCodec.createEncoderByType(AUDIO_MIME_TYPE);
@@ -3236,6 +3288,14 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     movie.setSize(videoWidth, videoHeight);
                     mediaMuxer = new MP4Builder().createMovie(movie, isSecretChat, false);
                     mediaMuxer.setAllowSyncFiles(allowSendingWhileRecording = SharedConfig.deviceIsHigh());
+
+                    PixelCameraLog.marker("round video " + videoWidth + "x" + videoHeight
+                            + " video:" + videoBitrate + " audio:" + PixelGramSettings.getAudioBitrate()
+                            + " nr:" + PixelGramSettings.getNoiseReductionMode() + " edge:" + PixelGramSettings.getEdgeMode()
+                            + " ev:" + PixelGramSettings.getExposureCompensationEv()
+                            + " voiceEnhancement:" + PixelGramSettings.getVoiceEnhancementMode()
+                            + " audioEffects:" + PixelGramSettings.isAudioEffectsEnabled()
+                            + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x");
                 }
 
                 AndroidUtilities.runOnUIThread(() -> {
@@ -3581,7 +3641,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
     }
 
     private String createFragmentShader(Size previewSize) {
-        if (SharedConfig.deviceIsLow() || !allowBigSizeCamera() || previewSize != null && Math.max(previewSize.getHeight(), previewSize.getWidth()) * 0.7f < MessagesController.getInstance(currentAccount).roundVideoSize) {
+        if (SharedConfig.deviceIsLow() || !allowBigSizeCamera() || previewSize != null && Math.max(previewSize.getHeight(), previewSize.getWidth()) * 0.7f < PixelGramSettings.getResolution()) {
             return "#extension GL_OES_EGL_image_external : require\n" +
                     "precision highp float;\n" +
                     "varying vec2 vTextureCoord;\n" +
@@ -3637,7 +3697,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
     }
 
     private String createFragmentShaderV2(Size previewSize) {
-        if (SharedConfig.deviceIsLow() || !allowBigSizeCamera() || previewSize != null && Math.max(previewSize.getHeight(), previewSize.getWidth()) * 0.7f < MessagesController.getInstance(currentAccount).roundVideoSize) {
+        if (SharedConfig.deviceIsLow() || !allowBigSizeCamera() || previewSize != null && Math.max(previewSize.getHeight(), previewSize.getWidth()) * 0.7f < PixelGramSettings.getResolution()) {
             return "#extension GL_OES_EGL_image_external : require\n" +
                     "precision highp float;\n" +
                     "varying vec2 vTextureCoord;\n" +
@@ -3757,6 +3817,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         if (ev.getActionMasked() == MotionEvent.ACTION_DOWN || ev.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN) {
             if (maybePinchToZoomTouchMode && !isInPinchToZoomTouchMode && ev.getPointerCount() == 2 && finishZoomTransition == null && recording) {
                 pinchStartDistance = (float) Math.hypot(ev.getX(1) - ev.getX(0), ev.getY(1) - ev.getY(0));
+                lastPinchDistance = pinchStartDistance;
 
                 pinchScale = 1f;
 
@@ -3786,11 +3847,19 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 finishZoom();
                 return false;
             }
-            pinchScale = (float) Math.hypot(ev.getX(index2) - ev.getX(index1), ev.getY(index2) - ev.getY(index1)) / pinchStartDistance;
+            float currentDistance = (float) Math.hypot(ev.getX(index2) - ev.getX(index1), ev.getY(index2) - ev.getY(index1));
+            pinchScale = currentDistance / pinchStartDistance;
             if (useCamera2) {
                 if (camera2SessionCurrent != null) {
-                    float zoom = Utilities.clamp(pinchScale, camera2SessionCurrent.getMaxZoom(), camera2SessionCurrent.getMinZoom());
+                    float deltaRatio = currentDistance / lastPinchDistance;
+                    float currentZoom = camera2SessionCurrent.getZoom();
+                    float minZoom = camera2SessionCurrent.getMinZoom();
+                    float ceiling = Math.min(camera2SessionCurrent.getMaxZoom(), PINCH_ZOOM_CEILING);
+                    float t = ceiling > minZoom ? Utilities.clamp((currentZoom - minZoom) / (ceiling - minZoom), 1f, 0f) : 0f;
+                    float exponent = AndroidUtilities.lerp(PINCH_SENSITIVITY_LOW, PINCH_SENSITIVITY_HIGH, t);
+                    float zoom = Utilities.clamp(currentZoom * (float) Math.pow(deltaRatio, exponent), ceiling, minZoom);
                     camera2SessionCurrent.setZoom(zoom);
+                    lastPinchDistance = currentDistance;
                 }
             } else {
                 float zoom = Math.min(1f, Math.max(0, pinchScale - 1f));
@@ -3813,7 +3882,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         float zoom;
         if (useCamera2) {
             if (camera2SessionCurrent == null) return;
-            zoom = Utilities.clamp(pinchScale, camera2SessionCurrent.getMaxZoom(), camera2SessionCurrent.getMinZoom());
+            zoom = camera2SessionCurrent.getZoom();
         } else {
             zoom = Math.min(1f, Math.max(0, pinchScale - 1f));
         }
@@ -3823,7 +3892,8 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             finishZoomTransition.addUpdateListener(valueAnimator -> {
                 if (useCamera2) {
                     if (camera2SessionCurrent != null) {
-                        camera2SessionCurrent.setZoom((float) valueAnimator.getAnimatedValue());
+                        float animatedZoom = (float) valueAnimator.getAnimatedValue();
+                        camera2SessionCurrent.setZoom(animatedZoom);
                     }
                 } else {
                     if (cameraSession != null) {

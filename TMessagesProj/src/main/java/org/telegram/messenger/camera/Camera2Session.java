@@ -14,14 +14,16 @@ import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
+import android.hardware.camera2.params.Face;
+import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.util.Log;
 import android.util.Range;
+import android.util.Rational;
 import android.util.Size;
 import android.util.SizeF;
 import android.view.Surface;
@@ -46,6 +48,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 @TargetApi(Build.VERSION_CODES.LOLLIPOP)
 public class Camera2Session {
@@ -69,10 +72,23 @@ public class Camera2Session {
 
     private final CameraDevice.StateCallback cameraStateCallback;
     private final CameraCaptureSession.StateCallback captureStateCallback;
+    private final CameraCaptureSession.CaptureCallback captureCallback;
     private CaptureRequest.Builder captureRequestBuilder;
     private Rect sensorSize;
     private float maxZoom = 1f;
     private float currentZoom = 1f;
+    private Range<Integer> targetFpsRange;
+    private boolean afContinuousVideoSupported;
+    private boolean videoStabilizationSupported;
+    private boolean opticalStabilizationSupported;
+    private boolean faceDetectFullSupported;
+    private int[] availableNoiseReductionModes = new int[0];
+    private int[] availableEdgeModes = new int[0];
+    private Range<Integer> exposureCompensationRange;
+    private Rational exposureCompensationStep;
+    private int maxRegionsAe;
+    private Rect currentFaceAeRect;
+    private long lastFaceLogTimeMs;
 
     private final Size previewSize;
 
@@ -185,6 +201,13 @@ public class Camera2Session {
             }
         };
 
+        captureCallback = new CameraCaptureSession.CaptureCallback() {
+            @Override
+            public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {
+                onFaceDetectionResult(result);
+            }
+        };
+
         this.isFront = isFront;
         this.cameraId = cameraId;
         this.previewSize = size;
@@ -196,6 +219,17 @@ public class Camera2Session {
             sensorSize = cameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
             final Float value = cameraCharacteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
             maxZoom = (value == null || value < 1f) ? 1f : value;
+            targetFpsRange = pickTargetFpsRange(cameraCharacteristics, cameraId, isFront);
+            afContinuousVideoSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO, "CONTROL_AF_MODE_CONTINUOUS_VIDEO");
+            videoStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON, "CONTROL_VIDEO_STABILIZATION_MODE_ON");
+            opticalStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON, "LENS_OPTICAL_STABILIZATION_MODE_ON");
+            faceDetectFullSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES, CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL, "STATISTICS_FACE_DETECT_MODE_FULL");
+            availableNoiseReductionModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES);
+            availableEdgeModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
+            exposureCompensationRange = cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+            exposureCompensationStep = cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+            maxRegionsAe = checkMaxRegionsAe(cameraCharacteristics, cameraId, isFront);
+            PixelCameraLog.d(buildConfigSummary());
             cameraManager.openCamera(cameraId, cameraStateCallback, handler);
         } catch (Exception e) {
             FileLog.e(e);
@@ -203,6 +237,261 @@ public class Camera2Session {
                 isError = true;
             });
         }
+    }
+
+    private static Range<Integer> pickTargetFpsRange(CameraCharacteristics characteristics, String cameraId, boolean front) {
+        Range<Integer>[] ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+        if (ranges == null || ranges.length == 0) {
+            return null;
+        }
+
+        Range<Integer> chosen = null;
+        for (Range<Integer> range : ranges) {
+            if (range.getLower() == 30 && range.getUpper() == 30) {
+                chosen = range;
+                break;
+            }
+        }
+        if (chosen == null) {
+            int bestWidth = Integer.MAX_VALUE;
+            for (Range<Integer> range : ranges) {
+                if (range.getLower() <= 30 && range.getUpper() >= 30) {
+                    int width = range.getUpper() - range.getLower();
+                    if (width < bestWidth) {
+                        bestWidth = width;
+                        chosen = range;
+                    }
+                }
+            }
+        }
+        return chosen;
+    }
+
+    private static boolean supportsMode(int[] available, int mode) {
+        if (available == null) return false;
+        for (int m : available) {
+            if (m == mode) return true;
+        }
+        return false;
+    }
+
+    private static boolean checkModeSupport(CameraCharacteristics characteristics, String cameraId, boolean front, CameraCharacteristics.Key<int[]> availableModesKey, int mode, String label) {
+        return supportsMode(characteristics.get(availableModesKey), mode);
+    }
+
+    private static int[] queryAvailableModes(CameraCharacteristics characteristics, CameraCharacteristics.Key<int[]> availableModesKey) {
+        int[] modes = characteristics.get(availableModesKey);
+        return modes == null ? new int[0] : modes;
+    }
+
+    private static int checkMaxRegionsAe(CameraCharacteristics characteristics, String cameraId, boolean front) {
+        Integer maxRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE);
+        return maxRegions == null ? 0 : maxRegions;
+    }
+
+    /** Resolves the user's preferred noise reduction mode against what this camera actually
+     * supports, falling back preferred -> FAST -> OFF. Returns null only if none of those
+     * three are supported at all (capture key is then left unset). */
+    private Integer resolveNoiseReductionMode() {
+        int preferred = PixelGramSettings.getNoiseReductionMode();
+        if (supportsMode(availableNoiseReductionModes, preferred)) return preferred;
+        if (supportsMode(availableNoiseReductionModes, CameraMetadata.NOISE_REDUCTION_MODE_FAST)) return CameraMetadata.NOISE_REDUCTION_MODE_FAST;
+        if (supportsMode(availableNoiseReductionModes, CameraMetadata.NOISE_REDUCTION_MODE_OFF)) return CameraMetadata.NOISE_REDUCTION_MODE_OFF;
+        return null;
+    }
+
+    /** Same fallback shape as resolveNoiseReductionMode(), for EDGE_MODE. */
+    private Integer resolveEdgeMode() {
+        int preferred = PixelGramSettings.getEdgeMode();
+        if (supportsMode(availableEdgeModes, preferred)) return preferred;
+        if (supportsMode(availableEdgeModes, CameraMetadata.EDGE_MODE_FAST)) return CameraMetadata.EDGE_MODE_FAST;
+        if (supportsMode(availableEdgeModes, CameraMetadata.EDGE_MODE_OFF)) return CameraMetadata.EDGE_MODE_OFF;
+        return null;
+    }
+
+    /** Converts the user's exposure-compensation EV setting to steps against this camera's
+     * cached CONTROL_AE_COMPENSATION_RANGE/_STEP, clamped to range. Null if unavailable. */
+    private Integer resolveExposureCompensationSteps() {
+        if (exposureCompensationRange == null || exposureCompensationStep == null || exposureCompensationStep.floatValue() == 0f) {
+            return null;
+        }
+        float ev = PixelGramSettings.getExposureCompensationEv();
+        int steps = Math.round(ev / exposureCompensationStep.floatValue());
+        return Math.max(exposureCompensationRange.getLower(), Math.min(exposureCompensationRange.getUpper(), steps));
+    }
+
+    private static String noiseReductionModeName(Integer mode) {
+        if (mode == null) return "none";
+        if (mode == CameraMetadata.NOISE_REDUCTION_MODE_OFF) return "off";
+        if (mode == CameraMetadata.NOISE_REDUCTION_MODE_FAST) return "fast";
+        if (mode == CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY) return "hq";
+        return String.valueOf(mode);
+    }
+
+    private static String edgeModeName(Integer mode) {
+        if (mode == null) return "none";
+        if (mode == CameraMetadata.EDGE_MODE_OFF) return "off";
+        if (mode == CameraMetadata.EDGE_MODE_FAST) return "fast";
+        if (mode == CameraMetadata.EDGE_MODE_HIGH_QUALITY) return "hq";
+        return String.valueOf(mode);
+    }
+
+    /** One resolved-config line logged once per camera open, replacing the old per-mode/per-range spam. */
+    private String buildConfigSummary() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("cam").append(cameraId).append(' ').append(isFront ? "front" : "rear");
+        // The round video output resolution, not previewSize.getWidth() (the camera preview
+        // stream size, e.g. 1080) - matches what the per-recording marker line reports.
+        sb.append(' ').append(PixelGramSettings.getResolution());
+        sb.append(' ');
+        if (targetFpsRange != null) {
+            if (targetFpsRange.getLower().equals(targetFpsRange.getUpper())) {
+                sb.append(targetFpsRange.getLower());
+            } else {
+                sb.append(targetFpsRange.getLower()).append('-').append(targetFpsRange.getUpper());
+            }
+        } else {
+            sb.append('?');
+        }
+        sb.append("fps");
+
+        Integer evSteps = resolveExposureCompensationSteps();
+        float ev = (evSteps != null && exposureCompensationStep != null) ? evSteps * exposureCompensationStep.floatValue() : 0f;
+        sb.append(" ev").append(ev >= 0 ? "+" : "").append(String.format(Locale.US, "%.1f", ev));
+
+        sb.append(" nr:").append(noiseReductionModeName(resolveNoiseReductionMode()));
+        sb.append(" edge:").append(edgeModeName(resolveEdgeMode()));
+        sb.append(" eis:").append(videoStabilizationSupported ? "on" : "n/a");
+        sb.append(" ois:").append(opticalStabilizationSupported ? "on" : "n/a");
+        sb.append(" aeregions:").append((maxRegionsAe > 0 && PixelGramSettings.isFaceAeMeteringEnabled()) ? 1 : 0);
+        sb.append(" maxzoom:").append(maxZoom);
+        return sb.toString();
+    }
+
+    private static CameraCharacteristics queryCharacteristicsForFacing(boolean front) {
+        try {
+            final Context context = ApplicationLoader.applicationContext;
+            final CameraManager cameraManager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+            for (String id : cameraManager.getCameraIdList()) {
+                CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(id);
+                if (characteristics == null) continue;
+                Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+                if (facing == null) continue;
+                if (facing == (front ? CameraCharacteristics.LENS_FACING_FRONT : CameraCharacteristics.LENS_FACING_BACK)) {
+                    return characteristics;
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        return null;
+    }
+
+    /** Static capability queries for the settings screen, which has no open camera session.
+     * Independent of the aspect-ratio-driven create() lookup above. Return empty/null on any
+     * failure (no permission yet, no such camera, ...) - the settings UI treats that as
+     * "assume unsupported, disable." */
+    public static int[] queryAvailableNoiseReductionModes(boolean front) {
+        CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
+        if (characteristics == null) return new int[0];
+        return queryAvailableModes(characteristics, CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES);
+    }
+
+    public static int[] queryAvailableEdgeModes(boolean front) {
+        CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
+        if (characteristics == null) return new int[0];
+        return queryAvailableModes(characteristics, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
+    }
+
+    public static Range<Integer> queryExposureCompensationRange(boolean front) {
+        CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
+        return characteristics == null ? null : characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+    }
+
+    public static Rational queryExposureCompensationStep(boolean front) {
+        CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
+        return characteristics == null ? null : characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+    }
+
+    // Called on the tg_camera2 handler thread for every completed capture while a
+    // repeating request is active. Feeds face detection (STATISTICS_FACES, enabled
+    // via STATISTICS_FACE_DETECT_MODE_FULL above) into CONTROL_AE_REGIONS, but only
+    // rebuilds the capture request when the face has moved meaningfully - AE chasing
+    // per-frame detection jitter causes visible brightness pumping.
+    private void onFaceDetectionResult(CaptureResult result) {
+        // Face detection runs whenever the hardware supports it, independent of the
+        // face-AE-metering setting - that setting only gates whether the tracked face rect
+        // feeds CONTROL_AE_REGIONS (see updateCaptureRequest()); exposure compensation is
+        // gated on face presence alone so it stays testable with metering off.
+        if (!recordingVideo || !faceDetectFullSupported) return;
+
+        Face[] faces = result.get(CaptureResult.STATISTICS_FACES);
+        if (faces == null || faces.length == 0) {
+            // No face: drop the AE region and, via updateCaptureRequest()'s own
+            // currentFaceAeRect check, the +EV exposure compensation with it -
+            // outdoors on the rear camera with nothing to meter on, holding the
+            // last-known face region/compensation blows highlights.
+            if (currentFaceAeRect != null) {
+                currentFaceAeRect = null;
+                PixelCameraLog.d("camera #" + cameraId + ": face lost, clearing AE region and exposure compensation to 0");
+                updateCaptureRequest();
+            }
+            return;
+        }
+
+        Face largest = faces[0];
+        long largestArea = faceArea(largest);
+        for (Face face : faces) {
+            long area = faceArea(face);
+            if (area > largestArea) {
+                largest = face;
+                largestArea = area;
+            }
+        }
+
+        // Face bounds and CONTROL_AE_REGIONS both use active-array coordinates;
+        // intersect defensively in case a face straddles the array edge.
+        Rect regionRect = new Rect(largest.getBounds());
+        if (sensorSize != null && !regionRect.intersect(sensorSize)) {
+            return;
+        }
+        if (regionRect.isEmpty()) return;
+
+        boolean wasAbsent = currentFaceAeRect == null;
+        boolean shouldRebuild = wasAbsent || hasMovedMeaningfully(currentFaceAeRect, regionRect);
+
+        if (wasAbsent) {
+            PixelCameraLog.d("camera #" + cameraId + ": face acquired, exposure compensation applied (" + resolveExposureCompensationSteps() + " steps)");
+        }
+
+        // Only reaches logcat/file at all when debug logging is on - unlike PixelCameraLog.d's
+        // other call sites, which always reach logcat regardless of the setting.
+        if (PixelGramSettings.isDebugLoggingEnabled()) {
+            long now = System.currentTimeMillis();
+            if (now - lastFaceLogTimeMs >= 1000) {
+                PixelCameraLog.d("camera #" + cameraId + ": largest face bounds " + regionRect + (shouldRebuild ? " (region updated)" : " (region unchanged, holding)"));
+                lastFaceLogTimeMs = now;
+            }
+        }
+
+        if (shouldRebuild) {
+            currentFaceAeRect = regionRect;
+            updateCaptureRequest();
+        }
+    }
+
+    private static long faceArea(Face face) {
+        Rect bounds = face.getBounds();
+        return (long) bounds.width() * bounds.height();
+    }
+
+    private boolean hasMovedMeaningfully(Rect previous, Rect current) {
+        if (sensorSize == null) return true;
+        // ~5% of the shorter active-array side.
+        int threshold = Math.max(1, Math.min(sensorSize.width(), sensorSize.height()) / 20);
+        return Math.abs(previous.centerX() - current.centerX()) > threshold
+                || Math.abs(previous.centerY() - current.centerY()) > threshold
+                || Math.abs(previous.width() - current.width()) > threshold
+                || Math.abs(previous.height() - current.height()) > threshold;
     }
 
     private Runnable doneCallback;
@@ -349,7 +638,7 @@ public class Camera2Session {
         updateCaptureRequest();
 
         try {
-            captureSession.setRepeatingRequest(captureRequestBuilder.build(), null, handler);
+            captureSession.setRepeatingRequest(captureRequestBuilder.build(), captureCallback, handler);
         } catch (Exception e) {
             FileLog.e(e);
         }
@@ -490,8 +779,85 @@ public class Camera2Session {
             captureRequestBuilder.set(CaptureRequest.FLASH_MODE, flashing ? (recordingVideo ? CaptureRequest.FLASH_MODE_TORCH : CaptureRequest.FLASH_MODE_SINGLE) : CaptureRequest.FLASH_MODE_OFF);
 
             if (recordingVideo) {
-                captureRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<Integer>(30, 60));
+                if (targetFpsRange != null) {
+                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetFpsRange);
+                }
                 captureRequestBuilder.set(CaptureRequest.CONTROL_CAPTURE_INTENT, CaptureRequest.CONTROL_CAPTURE_INTENT_VIDEO_RECORD);
+
+                if (afContinuousVideoSupported) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": CONTROL_AF_MODE set failed", e);
+                    }
+                }
+
+                if (videoStabilizationSupported) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": CONTROL_VIDEO_STABILIZATION_MODE set failed", e);
+                    }
+                }
+
+                if (opticalStabilizationSupported) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": LENS_OPTICAL_STABILIZATION_MODE set failed", e);
+                    }
+                }
+
+                if (faceDetectFullSupported) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": STATISTICS_FACE_DETECT_MODE set failed", e);
+                    }
+                }
+
+                Integer edgeMode = resolveEdgeMode();
+                if (edgeMode != null) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.EDGE_MODE, edgeMode);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": EDGE_MODE set failed", e);
+                    }
+                }
+
+                Integer noiseReductionMode = resolveNoiseReductionMode();
+                if (noiseReductionMode != null) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE, noiseReductionMode);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": NOISE_REDUCTION_MODE set failed", e);
+                    }
+                }
+
+                Integer exposureCompensationSteps = resolveExposureCompensationSteps();
+                if (exposureCompensationSteps != null) {
+                    try {
+                        // Only meter-boost while we actually have a face to expose for -
+                        // otherwise (e.g. rear camera outdoors) this blows highlights. Gated on
+                        // face presence alone, independent of the face-AE-metering setting below.
+                        int compensation = currentFaceAeRect != null ? exposureCompensationSteps : 0;
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, compensation);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": CONTROL_AE_EXPOSURE_COMPENSATION set failed", e);
+                    }
+                }
+
+                // Face-AE metering setting only gates whether the tracked face rect drives
+                // CONTROL_AE_REGIONS - it doesn't gate face detection or exposure compensation
+                // above, so all four (metering x face-present) combinations stay testable.
+                if (maxRegionsAe > 0 && currentFaceAeRect != null && PixelGramSettings.isFaceAeMeteringEnabled()) {
+                    try {
+                        MeteringRectangle meteringRect = new MeteringRectangle(currentFaceAeRect, MeteringRectangle.METERING_WEIGHT_MAX);
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_AE_REGIONS, new MeteringRectangle[]{meteringRect});
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": CONTROL_AE_REGIONS set failed", e);
+                    }
+                }
             }
 
             if (sensorSize != null && Math.abs(currentZoom - 1f) >= 0.01f) {
@@ -509,7 +875,7 @@ public class Camera2Session {
             }
 
             captureRequestBuilder.addTarget(surface);
-            captureSession.setRepeatingRequest(captureRequestBuilder.build(), null, handler);
+            captureSession.setRepeatingRequest(captureRequestBuilder.build(), captureCallback, handler);
         } catch (Exception e) {
             FileLog.e("Camera2Sessions setRepeatingRequest error in updateCaptureRequest", e);
         }

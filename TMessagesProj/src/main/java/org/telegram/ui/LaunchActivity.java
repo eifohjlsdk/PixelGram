@@ -95,6 +95,8 @@ import com.google.firebase.appindexing.builders.AssistActionBuilder;
 import org.telegram.PhoneFormat.PhoneFormat;
 import org.telegram.messenger.AccountInstance;
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.ApiCredentials;
+import org.telegram.messenger.PixelGramUpdateChecker;
 import org.telegram.messenger.AnimationNotificationsLocker;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.AutoDeleteMediaTask;
@@ -849,7 +851,14 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         //    refreshRateController = new RefreshRateController(this);
         //}
         checkFrameMetrics();
+
+        if (!pixelGramUpdateCheckedThisProcess) {
+            pixelGramUpdateCheckedThisProcess = true;
+            AndroidUtilities.runOnUIThread(() -> PixelGramUpdateChecker.checkForUpdates(false), 5000);
+        }
     }
+
+    private static boolean pixelGramUpdateCheckedThisProcess;
 
     public void checkFrameMetrics() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -1083,6 +1092,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     private BaseFragment getClientNotActivatedFragment() {
+        if (!ApiCredentials.hasCredentials()) {
+            return new ApiCredentialsSetupActivity();
+        }
         if (LoginActivity.loadCurrentState(false, currentAccount).getInt("currentViewNum", 0) != 0) {
             return new LoginActivity();
         }

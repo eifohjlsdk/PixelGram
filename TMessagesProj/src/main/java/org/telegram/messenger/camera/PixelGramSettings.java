@@ -1,0 +1,238 @@
+package org.telegram.messenger.camera;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.hardware.camera2.CameraMetadata;
+import android.media.MediaRecorder;
+
+import org.telegram.messenger.ApplicationLoader;
+
+/**
+ * SharedPreferences-backed store for the PixelGram camera/recording settings screen.
+ * Read fresh (not cached) wherever a value is used - these are cheap in-memory lookups,
+ * not CameraCharacteristics re-parsing, so there's no reason to cache them.
+ */
+public class PixelGramSettings {
+
+    private static final String PREFS_NAME = "pixelgram_settings";
+
+    public static final int NOISE_REDUCTION_OFF = CameraMetadata.NOISE_REDUCTION_MODE_OFF;
+    public static final int NOISE_REDUCTION_FAST = CameraMetadata.NOISE_REDUCTION_MODE_FAST;
+    public static final int NOISE_REDUCTION_HIGH_QUALITY = CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY;
+
+    public static final int EDGE_MODE_OFF = CameraMetadata.EDGE_MODE_OFF;
+    public static final int EDGE_MODE_FAST = CameraMetadata.EDGE_MODE_FAST;
+    public static final int EDGE_MODE_HIGH_QUALITY = CameraMetadata.EDGE_MODE_HIGH_QUALITY;
+
+    public static final int VOICE_ENHANCEMENT_OFF = 0;
+    public static final int VOICE_ENHANCEMENT_VOICE_COMMUNICATION = 1;
+    public static final int VOICE_ENHANCEMENT_VOICE_RECOGNITION = 2;
+    public static final int VOICE_ENHANCEMENT_CAMCORDER = 3;
+
+    public static final int MIC_GAIN_1X = 0;
+    public static final int MIC_GAIN_1_5X = 1;
+    public static final int MIC_GAIN_2X = 2;
+    public static final int MIC_GAIN_3X = 3;
+
+    private static final String KEY_NOISE_REDUCTION = "noise_reduction_mode";
+    private static final String KEY_EDGE_MODE = "edge_mode";
+    private static final String KEY_FACE_AE_METERING = "face_ae_metering";
+    private static final String KEY_EXPOSURE_COMPENSATION = "exposure_compensation_ev";
+    private static final String KEY_RESOLUTION = "resolution";
+    private static final String KEY_VIDEO_BITRATE = "video_bitrate";
+    private static final String KEY_AUDIO_BITRATE = "audio_bitrate";
+    private static final String KEY_DEBUG_LOGGING = "debug_logging_enabled";
+    private static final String KEY_VOICE_ENHANCEMENT = "voice_enhancement_mode";
+    private static final String KEY_AUDIO_EFFECTS = "audio_effects_enabled";
+    private static final String KEY_MIC_GAIN = "mic_gain_mode";
+
+    public static final int DEFAULT_NOISE_REDUCTION = NOISE_REDUCTION_FAST;
+    public static final int DEFAULT_EDGE_MODE = EDGE_MODE_FAST;
+    public static final boolean DEFAULT_FACE_AE_METERING = true;
+    public static final float DEFAULT_EXPOSURE_COMPENSATION = 0.3f;
+    public static final int DEFAULT_RESOLUTION = 448;
+    public static final int DEFAULT_VIDEO_BITRATE = 1_000_000;
+    public static final int DEFAULT_AUDIO_BITRATE = 96_000;
+    public static final boolean DEFAULT_DEBUG_LOGGING = false;
+    // Measured A/B: voice communication runs ~12dB below stock and is unusable; voice
+    // recognition + audio effects gives the best speech clarity against background noise.
+    public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_VOICE_RECOGNITION;
+    public static final boolean DEFAULT_AUDIO_EFFECTS = true;
+    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_1X;
+
+    private static SharedPreferences prefs() {
+        return ApplicationLoader.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
+    public static int getNoiseReductionMode() {
+        return prefs().getInt(KEY_NOISE_REDUCTION, DEFAULT_NOISE_REDUCTION);
+    }
+
+    public static void setNoiseReductionMode(int mode) {
+        prefs().edit().putInt(KEY_NOISE_REDUCTION, mode).apply();
+    }
+
+    public static int getEdgeMode() {
+        return prefs().getInt(KEY_EDGE_MODE, DEFAULT_EDGE_MODE);
+    }
+
+    public static void setEdgeMode(int mode) {
+        prefs().edit().putInt(KEY_EDGE_MODE, mode).apply();
+    }
+
+    public static boolean isFaceAeMeteringEnabled() {
+        return prefs().getBoolean(KEY_FACE_AE_METERING, DEFAULT_FACE_AE_METERING);
+    }
+
+    public static void setFaceAeMeteringEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_FACE_AE_METERING, enabled).apply();
+    }
+
+    public static float getExposureCompensationEv() {
+        return prefs().getFloat(KEY_EXPOSURE_COMPENSATION, DEFAULT_EXPOSURE_COMPENSATION);
+    }
+
+    public static void setExposureCompensationEv(float ev) {
+        prefs().edit().putFloat(KEY_EXPOSURE_COMPENSATION, ev).apply();
+    }
+
+    public static int getResolution() {
+        return prefs().getInt(KEY_RESOLUTION, DEFAULT_RESOLUTION);
+    }
+
+    public static void setResolution(int resolution) {
+        prefs().edit().putInt(KEY_RESOLUTION, resolution).apply();
+    }
+
+    public static int getVideoBitrate() {
+        return prefs().getInt(KEY_VIDEO_BITRATE, DEFAULT_VIDEO_BITRATE);
+    }
+
+    public static void setVideoBitrate(int bitrate) {
+        prefs().edit().putInt(KEY_VIDEO_BITRATE, bitrate).apply();
+    }
+
+    public static int getAudioBitrate() {
+        return prefs().getInt(KEY_AUDIO_BITRATE, DEFAULT_AUDIO_BITRATE);
+    }
+
+    public static void setAudioBitrate(int bitrate) {
+        prefs().edit().putInt(KEY_AUDIO_BITRATE, bitrate).apply();
+    }
+
+    public static boolean isDebugLoggingEnabled() {
+        return prefs().getBoolean(KEY_DEBUG_LOGGING, DEFAULT_DEBUG_LOGGING);
+    }
+
+    public static void setDebugLoggingEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_DEBUG_LOGGING, enabled).apply();
+    }
+
+    public static int getVoiceEnhancementMode() {
+        return prefs().getInt(KEY_VOICE_ENHANCEMENT, DEFAULT_VOICE_ENHANCEMENT);
+    }
+
+    public static void setVoiceEnhancementMode(int mode) {
+        prefs().edit().putInt(KEY_VOICE_ENHANCEMENT, mode).apply();
+    }
+
+    /** Maps the voice enhancement mode to the actual MediaRecorder.AudioSource int to record with. */
+    public static int getVoiceEnhancementAudioSource() {
+        switch (getVoiceEnhancementMode()) {
+            case VOICE_ENHANCEMENT_VOICE_COMMUNICATION:
+                return MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+            case VOICE_ENHANCEMENT_VOICE_RECOGNITION:
+                return MediaRecorder.AudioSource.VOICE_RECOGNITION;
+            case VOICE_ENHANCEMENT_CAMCORDER:
+                return MediaRecorder.AudioSource.CAMCORDER;
+            case VOICE_ENHANCEMENT_OFF:
+            default:
+                return MediaRecorder.AudioSource.DEFAULT;
+        }
+    }
+
+    public static boolean isAudioEffectsEnabled() {
+        return prefs().getBoolean(KEY_AUDIO_EFFECTS, DEFAULT_AUDIO_EFFECTS);
+    }
+
+    public static void setAudioEffectsEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_AUDIO_EFFECTS, enabled).apply();
+    }
+
+    public static int getMicGainMode() {
+        return prefs().getInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN);
+    }
+
+    public static void setMicGainMode(int mode) {
+        prefs().edit().putInt(KEY_MIC_GAIN, mode).apply();
+    }
+
+    public static float getMicGainMultiplier() {
+        switch (getMicGainMode()) {
+            case MIC_GAIN_1_5X:
+                return 1.5f;
+            case MIC_GAIN_2X:
+                return 2.0f;
+            case MIC_GAIN_3X:
+                return 3.0f;
+            case MIC_GAIN_1X:
+            default:
+                return 1.0f;
+        }
+    }
+
+    /** Multiplies every 16-bit PCM sample in [0, lengthBytes) of buffer by the mic gain
+     * setting, clamped to Short.MIN_VALUE/MAX_VALUE so peaks clip cleanly instead of wrapping
+     * into distortion. Uses absolute indexed get/put so it doesn't disturb the buffer's
+     * position/limit. No-op (no per-sample cost) when gain is 1x. */
+    public static void applyMicGain(java.nio.ByteBuffer buffer, int lengthBytes) {
+        float gain = getMicGainMultiplier();
+        if (gain == 1.0f) return;
+        for (int i = 0; i + 1 < lengthBytes; i += 2) {
+            int boosted = Math.round(buffer.getShort(i) * gain);
+            if (boosted > Short.MAX_VALUE) {
+                boosted = Short.MAX_VALUE;
+            } else if (boosted < Short.MIN_VALUE) {
+                boosted = Short.MIN_VALUE;
+            }
+            buffer.putShort(i, (short) boosted);
+        }
+    }
+
+    private static final String KEY_LAST_UPDATE_CHECK_MS = "last_update_check_ms";
+    private static final String KEY_LAST_SEEN_VERSION = "last_seen_version";
+
+    // Update-check history, not a user preference - deliberately left out of
+    // resetToDefaults() so a settings reset doesn't also reset the 30-day check window.
+    public static long getLastUpdateCheckMs() {
+        return prefs().getLong(KEY_LAST_UPDATE_CHECK_MS, 0L);
+    }
+
+    public static void setLastUpdateCheckMs(long ms) {
+        prefs().edit().putLong(KEY_LAST_UPDATE_CHECK_MS, ms).apply();
+    }
+
+    public static String getLastSeenVersion() {
+        return prefs().getString(KEY_LAST_SEEN_VERSION, "");
+    }
+
+    public static void setLastSeenVersion(String version) {
+        prefs().edit().putString(KEY_LAST_SEEN_VERSION, version).apply();
+    }
+
+    public static void resetToDefaults() {
+        prefs().edit()
+                .putInt(KEY_NOISE_REDUCTION, DEFAULT_NOISE_REDUCTION)
+                .putInt(KEY_EDGE_MODE, DEFAULT_EDGE_MODE)
+                .putBoolean(KEY_FACE_AE_METERING, DEFAULT_FACE_AE_METERING)
+                .putFloat(KEY_EXPOSURE_COMPENSATION, DEFAULT_EXPOSURE_COMPENSATION)
+                .putInt(KEY_RESOLUTION, DEFAULT_RESOLUTION)
+                .putInt(KEY_VIDEO_BITRATE, DEFAULT_VIDEO_BITRATE)
+                .putInt(KEY_AUDIO_BITRATE, DEFAULT_AUDIO_BITRATE)
+                .putBoolean(KEY_DEBUG_LOGGING, DEFAULT_DEBUG_LOGGING)
+                .putInt(KEY_VOICE_ENHANCEMENT, DEFAULT_VOICE_ENHANCEMENT)
+                .putBoolean(KEY_AUDIO_EFFECTS, DEFAULT_AUDIO_EFFECTS)
+                .putInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN)
+                .apply();
+    }
+}

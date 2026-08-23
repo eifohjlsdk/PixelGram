@@ -1,0 +1,179 @@
+package org.telegram.messenger;
+
+import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.os.Build;
+
+import org.json.JSONObject;
+import org.telegram.messenger.browser.Browser;
+import org.telegram.messenger.camera.PixelGramSettings;
+import org.telegram.ui.ActionBar.BaseFragment;
+import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.Components.Bulletin;
+import org.telegram.ui.LaunchActivity;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Background check against the GitHub releases API for the PixelGram fork itself - not
+ * Telegram's own update mechanism (SharedConfig.pendingAppUpdate), which is Telegram-server-based
+ * and standalone-build-only. Throttled to once per 30 days and unmetered connections only for
+ * the automatic (non-manual) check; the settings screen's "Check now" bypasses both.
+ */
+public class PixelGramUpdateChecker {
+
+    // Single constant, easy to point at a different fork/repo later.
+    public static final String REPO_URL = "https://github.com/eifohjlsdk/telegram-pixel";
+    private static final String API_URL = "https://api.github.com/repos/eifohjlsdk/telegram-pixel/releases/latest";
+    private static final long CHECK_INTERVAL_MS = 30L * 24 * 60 * 60 * 1000;
+
+    public interface OnCheckDone {
+        void run();
+    }
+
+    public static void checkForUpdates(boolean manual) {
+        checkForUpdates(manual, null);
+    }
+
+    public static void checkForUpdates(boolean manual, OnCheckDone onDone) {
+        if (!manual) {
+            if (System.currentTimeMillis() - PixelGramSettings.getLastUpdateCheckMs() < CHECK_INTERVAL_MS) {
+                return;
+            }
+            if (!isUnmeteredConnection()) {
+                return;
+            }
+        }
+        Utilities.globalQueue.postRunnable(() -> {
+            Result result = fetchLatestRelease();
+            AndroidUtilities.runOnUIThread(() -> {
+                if (result != null) {
+                    // Only reset the 30-day window on an actual completed check, not a
+                    // network failure - a transient failure shouldn't cost a month's wait.
+                    PixelGramSettings.setLastUpdateCheckMs(System.currentTimeMillis());
+                    String currentVersion = getInstalledVersionName();
+                    boolean isNewer = currentVersion != null && !SharedConfig.versionBiggerOrEqual(currentVersion, result.version);
+                    if (isNewer) {
+                        PixelGramSettings.setLastSeenVersion(result.version);
+                        showUpdateBulletin(result);
+                    } else if (manual) {
+                        showSimpleBulletin("PixelGram is up to date.");
+                    }
+                } else if (manual) {
+                    showSimpleBulletin("Couldn't check for updates.");
+                }
+                if (onDone != null) {
+                    onDone.run();
+                }
+            });
+        });
+    }
+
+    private static class Result {
+        String version;
+        String notes;
+        String url;
+    }
+
+    private static Result fetchLatestRelease() {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(API_URL).openConnection();
+            connection.setRequestProperty("Accept", "application/vnd.github+json");
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(10000);
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                return null;
+            }
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+            }
+            JSONObject json = new JSONObject(sb.toString());
+            String tag = json.optString("tag_name", "");
+            if (tag.isEmpty()) {
+                return null;
+            }
+            if (tag.charAt(0) == 'v' || tag.charAt(0) == 'V') {
+                tag = tag.substring(1);
+            }
+            Result result = new Result();
+            result.version = tag;
+            result.notes = json.optString("body", "");
+            result.url = json.optString("html_url", REPO_URL + "/releases");
+            return result;
+        } catch (Exception e) {
+            FileLog.e(e);
+            return null;
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+    }
+
+    private static String getInstalledVersionName() {
+        try {
+            PackageInfo info = ApplicationLoader.applicationContext.getPackageManager().getPackageInfo(ApplicationLoader.applicationContext.getPackageName(), 0);
+            return info.versionName;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static boolean isUnmeteredConnection() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) ApplicationLoader.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                return false;
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                return !cm.isActiveNetworkMetered();
+            }
+            NetworkInfo info = cm.getActiveNetworkInfo();
+            return info != null && info.isConnected() && info.getType() == ConnectivityManager.TYPE_WIFI;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static void showUpdateBulletin(Result result) {
+        BaseFragment fragment = LaunchActivity.getLastFragment();
+        if (fragment == null || fragment.getParentActivity() == null) {
+            return;
+        }
+        String notes = result.notes == null ? "" : result.notes.trim();
+        if (notes.length() > 200) {
+            notes = notes.substring(0, 200) + "…";
+        }
+        String message = "PixelGram " + result.version + " is available. **View release**";
+        if (!notes.isEmpty()) {
+            message = message + "\n" + notes;
+        }
+        Bulletin.SimpleLayout layout = new Bulletin.SimpleLayout(fragment.getParentActivity(), fragment.getResourceProvider());
+        layout.textView.setText(AndroidUtilities.replaceSingleTag(message, Theme.key_undo_cancelColor, 0, () -> {
+            Browser.openUrl(fragment.getParentActivity(), result.url);
+        }));
+        layout.textView.setSingleLine(false);
+        Bulletin.make(fragment, layout, 6000).show();
+    }
+
+    private static void showSimpleBulletin(String message) {
+        BaseFragment fragment = LaunchActivity.getLastFragment();
+        if (fragment == null || fragment.getParentActivity() == null) {
+            return;
+        }
+        Bulletin.SimpleLayout layout = new Bulletin.SimpleLayout(fragment.getParentActivity(), fragment.getResourceProvider());
+        layout.textView.setText(message);
+        Bulletin.make(fragment, layout, 3000).show();
+    }
+}

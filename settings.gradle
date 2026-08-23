@@ -4,3 +4,10 @@ include ':TMessagesProj_AppHuawei'
 include ':TMessagesProj_AppHockeyApp'
 include ':TMessagesProj_AppStandalone'
 include ':TMessagesProj_AppTests'
+
+// Build-config fix, not upstream: 12.10.0 (4e1a61eca) added
+// `api project(':jlatexmath')` in TMessagesProj/build.gradle but never
+// registered the project here. Without this, evaluation of :TMessagesProj
+// fails before it reaches the android {} block. See FINDINGS.md.
+include ':jlatexmath'
+project(':jlatexmath').projectDir = file('TMessagesProj/lib/jlatexmath/jlatexmath')

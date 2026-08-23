@@ -1,5 +1,16 @@
 apply plugin: 'com.android.application'
 
+// Private release signing key (gitignored, never the public upstream dummy keystore) - see
+// local.signing.properties (keystore.path, keystore.alias, keystore.password). Read here rather
+// than inline in signingConfigs.release so the "file missing" check below can produce one clear
+// error instead of a bare NullPointerException/FileNotFoundException from AGP.
+def releaseSigningPropsFile = rootProject.file('local.signing.properties')
+def releaseSigningProps = null
+if (releaseSigningPropsFile.exists()) {
+    releaseSigningProps = new Properties()
+    releaseSigningProps.load(new FileInputStream(releaseSigningPropsFile))
+}
+
 repositories {
     mavenCentral()
     google()
@@ -50,10 +61,15 @@ android {
         }
 
         release {
-            storeFile file("../TMessagesProj/config/release.keystore")
-            storePassword RELEASE_STORE_PASSWORD
-            keyAlias RELEASE_KEY_ALIAS
-            keyPassword RELEASE_KEY_PASSWORD
+            // Left unset when local.signing.properties is absent - see the taskGraph check
+            // below, which fails clearly instead of silently falling back to the dummy keystore
+            // debug uses above.
+            if (releaseSigningProps != null) {
+                storeFile file(releaseSigningProps.getProperty('keystore.path'))
+                storePassword releaseSigningProps.getProperty('keystore.password')
+                keyAlias releaseSigningProps.getProperty('keystore.alias')
+                keyPassword releaseSigningProps.getProperty('keystore.password')
+            }
         }
     }
 
@@ -86,6 +102,7 @@ android {
             debuggable false
             jniDebuggable false
             signingConfig signingConfigs.release
+            applicationIdSuffix ".web"
             minifyEnabled true
             shrinkResources false
             multiDexEnabled true
@@ -195,6 +212,27 @@ android {
 
     lintOptions {
         checkReleaseBuilds false
+    }
+}
+
+// Fail clearly, up front, if a release/standalone task is actually requested without a private
+// signing key configured - rather than a bare AGP error partway through packaging, or (worse)
+// silently signing with the debug/dummy keystore.
+gradle.taskGraph.whenReady { graph ->
+    if (releaseSigningProps == null) {
+        def needsReleaseSigning = graph.allTasks.any { task ->
+            task.path.contains(':TMessagesProj_App:') &&
+                    (task.name.contains('Release') || task.name.contains('Standalone')) &&
+                    (task.name.startsWith('assemble') || task.name.startsWith('bundle') || task.name.startsWith('package') || task.name.startsWith('sign') || task.name.startsWith('install') || task.name.startsWith('validateSigning'))
+        }
+        if (needsReleaseSigning) {
+            throw new GradleException(
+                    "local.signing.properties not found at the repo root (" + releaseSigningPropsFile + "). " +
+                    "Release/standalone builds require a private release keystore - create it with " +
+                    "keystore.path, keystore.alias, and keystore.password. Refusing to fall back to the " +
+                    "public dummy keystore used for debug builds."
+            )
+        }
     }
 }
 
