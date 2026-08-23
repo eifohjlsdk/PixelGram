@@ -47,10 +47,10 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Fresh implementation against the current capability-cached Camera2Session - the
- * wip-settings-recovered copy of this file (org.telegram.messenger.camera.PixelGramSettings
- * on the telegram-pixel repo) is a structural reference only, not a port; that version
- * predates capability gating, face-AE metering, and per-request settings reads.
+ * Settings screen for PixelGram's camera/recording tuning (see PixelGramSettings for the
+ * backing store). Options are gated against Camera2Session's cached hardware capability
+ * checks - noise reduction, edge mode, and exposure compensation are read fresh on every
+ * capture request rather than cached once, so changes here take effect on the next frame.
  */
 public class PixelGramSettingsActivity extends BaseFragment {
 
