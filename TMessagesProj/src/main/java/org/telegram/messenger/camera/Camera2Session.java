@@ -89,6 +89,7 @@ public class Camera2Session {
     private int maxRegionsAe;
     private Rect currentFaceAeRect;
     private long lastFaceLogTimeMs;
+    private long lastAeRegionsLogTimeMs;
 
     private final Size previewSize;
 
@@ -423,6 +424,19 @@ public class Camera2Session {
         // feeds CONTROL_AE_REGIONS (see updateCaptureRequest()); exposure compensation is
         // gated on face presence alone so it stays testable with metering off.
         if (!recordingVideo || !faceDetectFullSupported) return;
+
+        // Result-side confirmation that the HAL is actually applying the region we asked for,
+        // not just what we requested - covers both the face-present and face-absent windows
+        // (unlike the face-bounds debug log below, which only fires when a face is present).
+        // Only reaches logcat/file when debug logging is on, same as the face-bounds log.
+        if (PixelGramSettings.isDebugLoggingEnabled()) {
+            long now = System.currentTimeMillis();
+            if (now - lastAeRegionsLogTimeMs >= 1000) {
+                MeteringRectangle[] appliedRegions = result.get(CaptureResult.CONTROL_AE_REGIONS);
+                PixelCameraLog.d("camera #" + cameraId + ": applied CONTROL_AE_REGIONS=" + Arrays.toString(appliedRegions) + " currentFaceAeRect=" + currentFaceAeRect);
+                lastAeRegionsLogTimeMs = now;
+            }
+        }
 
         Face[] faces = result.get(CaptureResult.STATISTICS_FACES);
         if (faces == null || faces.length == 0) {
