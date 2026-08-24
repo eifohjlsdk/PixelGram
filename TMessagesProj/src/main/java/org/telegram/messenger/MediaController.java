@@ -44,6 +44,7 @@ import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
+import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.AutomaticGainControl;
 import android.media.audiofx.NoiseSuppressor;
 import android.media.MediaCodec;
@@ -1077,6 +1078,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     private AudioRecord audioRecorder;
     private NoiseSuppressor audioNoiseSuppressor;
     private AutomaticGainControl audioAutomaticGainControl;
+    private AcousticEchoCanceler audioEchoCanceler;
     public TLRPC.TL_document recordingAudio;
     private int recordingGuid = -1;
     private int recordingCurrentAccount;
@@ -4464,25 +4466,38 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
     }
 
-    /** Attaches NoiseSuppressor/AutomaticGainControl to the just-constructed audioRecorder's
-     * session when PixelGramSettings.isAudioEffectsEnabled() - same on/off setting and
-     * isAvailable()-gated pattern as InstantCameraView's round-video recording. */
+    /** Attaches NoiseSuppressor/AutomaticGainControl/AcousticEchoCanceler to the just-constructed
+     * audioRecorder's session, each independently gated on its own PixelGramSettings on/off
+     * setting and isAvailable() check - same pattern as InstantCameraView's round-video
+     * recording. Logs each effect's actual getEnabled() state right after attaching rather than
+     * assuming the requested state took - AOSP documents that some devices insert noise
+     * suppression into the capture path automatically depending on AudioSource, so what we asked
+     * for and what the platform actually did can differ. */
     private void attachAudioEffects() {
-        if (!PixelGramSettings.isAudioEffectsEnabled() || audioRecorder == null) {
+        if (audioRecorder == null) {
             return;
         }
         try {
             int sessionId = audioRecorder.getAudioSessionId();
-            if (NoiseSuppressor.isAvailable()) {
+            if (PixelGramSettings.isNoiseSuppressionEnabled() && NoiseSuppressor.isAvailable()) {
                 audioNoiseSuppressor = NoiseSuppressor.create(sessionId);
                 if (audioNoiseSuppressor != null) {
                     audioNoiseSuppressor.setEnabled(true);
+                    FileLog.d("MediaController: NoiseSuppressor actual enabled=" + audioNoiseSuppressor.getEnabled());
                 }
             }
-            if (AutomaticGainControl.isAvailable()) {
+            if (PixelGramSettings.isAgcEnabled() && AutomaticGainControl.isAvailable()) {
                 audioAutomaticGainControl = AutomaticGainControl.create(sessionId);
                 if (audioAutomaticGainControl != null) {
                     audioAutomaticGainControl.setEnabled(true);
+                    FileLog.d("MediaController: AutomaticGainControl actual enabled=" + audioAutomaticGainControl.getEnabled());
+                }
+            }
+            if (PixelGramSettings.isEchoCancellationEnabled() && AcousticEchoCanceler.isAvailable()) {
+                audioEchoCanceler = AcousticEchoCanceler.create(sessionId);
+                if (audioEchoCanceler != null) {
+                    audioEchoCanceler.setEnabled(true);
+                    FileLog.d("MediaController: AcousticEchoCanceler actual enabled=" + audioEchoCanceler.getEnabled());
                 }
             }
         } catch (Exception e) {
@@ -4499,6 +4514,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             if (audioAutomaticGainControl != null) {
                 audioAutomaticGainControl.release();
                 audioAutomaticGainControl = null;
+            }
+            if (audioEchoCanceler != null) {
+                audioEchoCanceler.release();
+                audioEchoCanceler = null;
             }
         } catch (Exception e) {
             FileLog.e(e);

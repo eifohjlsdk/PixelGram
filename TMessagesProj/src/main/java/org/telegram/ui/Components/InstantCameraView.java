@@ -34,6 +34,7 @@ import android.hardware.Camera;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
+import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.AutomaticGainControl;
 import android.media.audiofx.NoiseSuppressor;
 import android.media.AudioTimestamp;
@@ -2208,6 +2209,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         private AudioRecord audioRecorder;
         private NoiseSuppressor audioNoiseSuppressor;
         private AutomaticGainControl audioAutomaticGainControl;
+        private AcousticEchoCanceler audioEchoCanceler;
 
         private ArrayBlockingQueue<AudioBufferInfo> buffers = new ArrayBlockingQueue<>(10);
         private ArrayList<Bitmap> keyframeThumbs = new ArrayList<>();
@@ -2327,6 +2329,10 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     if (audioAutomaticGainControl != null) {
                         audioAutomaticGainControl.release();
                         audioAutomaticGainControl = null;
+                    }
+                    if (audioEchoCanceler != null) {
+                        audioEchoCanceler.release();
+                        audioEchoCanceler = null;
                     }
                     audioRecorder.release();
                 } catch (Exception e) {
@@ -3210,24 +3216,42 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 skippedTime = 0;
 
                 audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
-                if (PixelGramSettings.isAudioEffectsEnabled()) {
-                    try {
-                        int sessionId = audioRecorder.getAudioSessionId();
-                        if (NoiseSuppressor.isAvailable()) {
-                            audioNoiseSuppressor = NoiseSuppressor.create(sessionId);
-                            if (audioNoiseSuppressor != null) {
-                                audioNoiseSuppressor.setEnabled(true);
-                            }
+                // Each effect is independently gated on its own setting and isAvailable() check.
+                // Actual enabled state is read back via getEnabled() (not assumed from the
+                // setEnabled() call we just made) since AOSP documents that some devices insert
+                // noise suppression into the capture path automatically depending on AudioSource -
+                // what we asked for and what the platform actually did can differ.
+                boolean noiseSuppressionActuallyEnabled = false;
+                boolean agcActuallyEnabled = false;
+                boolean echoCancellationActuallyEnabled = false;
+                try {
+                    int sessionId = audioRecorder.getAudioSessionId();
+                    if (PixelGramSettings.isNoiseSuppressionEnabled() && NoiseSuppressor.isAvailable()) {
+                        audioNoiseSuppressor = NoiseSuppressor.create(sessionId);
+                        if (audioNoiseSuppressor != null) {
+                            audioNoiseSuppressor.setEnabled(true);
+                            noiseSuppressionActuallyEnabled = audioNoiseSuppressor.getEnabled();
+                            PixelCameraLog.d("NoiseSuppressor actual enabled=" + noiseSuppressionActuallyEnabled);
                         }
-                        if (AutomaticGainControl.isAvailable()) {
-                            audioAutomaticGainControl = AutomaticGainControl.create(sessionId);
-                            if (audioAutomaticGainControl != null) {
-                                audioAutomaticGainControl.setEnabled(true);
-                            }
-                        }
-                    } catch (Exception e) {
-                        PixelCameraLog.w("failed to attach audio effects", e);
                     }
+                    if (PixelGramSettings.isAgcEnabled() && AutomaticGainControl.isAvailable()) {
+                        audioAutomaticGainControl = AutomaticGainControl.create(sessionId);
+                        if (audioAutomaticGainControl != null) {
+                            audioAutomaticGainControl.setEnabled(true);
+                            agcActuallyEnabled = audioAutomaticGainControl.getEnabled();
+                            PixelCameraLog.d("AutomaticGainControl actual enabled=" + agcActuallyEnabled);
+                        }
+                    }
+                    if (PixelGramSettings.isEchoCancellationEnabled() && AcousticEchoCanceler.isAvailable()) {
+                        audioEchoCanceler = AcousticEchoCanceler.create(sessionId);
+                        if (audioEchoCanceler != null) {
+                            audioEchoCanceler.setEnabled(true);
+                            echoCancellationActuallyEnabled = audioEchoCanceler.getEnabled();
+                            PixelCameraLog.d("AcousticEchoCanceler actual enabled=" + echoCancellationActuallyEnabled);
+                        }
+                    }
+                } catch (Exception e) {
+                    PixelCameraLog.w("failed to attach audio effects", e);
                 }
                 audioRecorder.startRecording();
                 if (BuildVars.LOGS_ENABLED) {
@@ -3294,7 +3318,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " nr:" + PixelGramSettings.getNoiseReductionMode() + " edge:" + PixelGramSettings.getEdgeMode()
                             + " ev:" + PixelGramSettings.getExposureCompensationEv()
                             + " voiceEnhancement:" + PixelGramSettings.getVoiceEnhancementMode()
-                            + " audioEffects:" + PixelGramSettings.isAudioEffectsEnabled()
+                            + " noiseSuppression:" + noiseSuppressionActuallyEnabled
+                            + " agc:" + agcActuallyEnabled
+                            + " echoCancellation:" + echoCancellationActuallyEnabled
                             + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x");
                 }
 

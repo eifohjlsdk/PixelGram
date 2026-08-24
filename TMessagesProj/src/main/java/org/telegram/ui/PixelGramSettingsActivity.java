@@ -2,6 +2,9 @@ package org.telegram.ui;
 
 import android.content.Context;
 import android.content.DialogInterface;
+import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.AutomaticGainControl;
+import android.media.audiofx.NoiseSuppressor;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
@@ -77,7 +80,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
 
     private int headerAudioRow;
     private int voiceEnhancementRow;
-    private int audioEffectsRow;
+    private int noiseSuppressionRow;
+    private int agcRow;
+    private int echoCancellationRow;
     private int micGainRow;
     private int divider3Row;
 
@@ -125,7 +130,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
 
         headerAudioRow = rowCount++;
         voiceEnhancementRow = rowCount++;
-        audioEffectsRow = rowCount++;
+        noiseSuppressionRow = rowCount++;
+        agcRow = rowCount++;
+        echoCancellationRow = rowCount++;
         micGainRow = rowCount++;
         divider3Row = rowCount++;
 
@@ -184,9 +191,26 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 showExposureCompensationDialog();
             } else if (position == voiceEnhancementRow) {
                 showVoiceEnhancementDialog();
-            } else if (position == audioEffectsRow) {
-                PixelGramSettings.setAudioEffectsEnabled(!PixelGramSettings.isAudioEffectsEnabled());
-                ((TextCheckCell) view).setChecked(PixelGramSettings.isAudioEffectsEnabled());
+            } else if (position == noiseSuppressionRow) {
+                // RecyclerListView's click dispatch (RecyclerListViewItemClickListener.onPressItem)
+                // fires unconditionally - it never consults View.isEnabled() - so the adapter's
+                // isEnabled(holder) only grays the row cosmetically and does not itself block
+                // taps. Re-check isAvailable() here and no-op if unsupported, rather than relying
+                // on isEnabled(holder) to have stopped this from firing at all.
+                if (NoiseSuppressor.isAvailable()) {
+                    PixelGramSettings.setNoiseSuppressionEnabled(!PixelGramSettings.isNoiseSuppressionEnabled());
+                    ((TextCheckCell) view).setChecked(PixelGramSettings.isNoiseSuppressionEnabled());
+                }
+            } else if (position == agcRow) {
+                if (AutomaticGainControl.isAvailable()) {
+                    PixelGramSettings.setAgcEnabled(!PixelGramSettings.isAgcEnabled());
+                    ((TextCheckCell) view).setChecked(PixelGramSettings.isAgcEnabled());
+                }
+            } else if (position == echoCancellationRow) {
+                if (AcousticEchoCanceler.isAvailable()) {
+                    PixelGramSettings.setEchoCancellationEnabled(!PixelGramSettings.isEchoCancellationEnabled());
+                    ((TextCheckCell) view).setChecked(PixelGramSettings.isEchoCancellationEnabled());
+                }
             } else if (position == micGainRow) {
                 showMicGainDialog();
             } else if (position == resetRow) {
@@ -496,7 +520,11 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || pos == resolutionRow || pos == videoBitrateRow || pos == audioBitrateRow
                     || pos == debugLoggingRow
                     || pos == noiseReductionRow || pos == edgeModeRow || pos == faceAeMeteringRow || pos == exposureCompensationRow
-                    || pos == voiceEnhancementRow || pos == audioEffectsRow || pos == micGainRow
+                    || pos == voiceEnhancementRow
+                    || (pos == noiseSuppressionRow && NoiseSuppressor.isAvailable())
+                    || (pos == agcRow && AutomaticGainControl.isAvailable())
+                    || (pos == echoCancellationRow && AcousticEchoCanceler.isAvailable())
+                    || pos == micGainRow
                     || pos == resetRow || pos == checkNowRow;
         }
 
@@ -583,8 +611,15 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndCheck("Debug Logging", PixelGramSettings.isDebugLoggingEnabled(), false);
                     } else if (position == faceAeMeteringRow) {
                         cell.setTextAndCheck("Face-Weighted AE Metering", PixelGramSettings.isFaceAeMeteringEnabled(), true);
-                    } else if (position == audioEffectsRow) {
-                        cell.setTextAndCheck("Audio Effects (noise suppression + AGC)", PixelGramSettings.isAudioEffectsEnabled(), true);
+                    } else if (position == noiseSuppressionRow) {
+                        boolean available = NoiseSuppressor.isAvailable();
+                        cell.setTextAndCheck("Noise Suppression" + (available ? "" : " (unavailable)"), PixelGramSettings.isNoiseSuppressionEnabled(), true);
+                    } else if (position == agcRow) {
+                        boolean available = AutomaticGainControl.isAvailable();
+                        cell.setTextAndCheck("Automatic Gain Control" + (available ? "" : " (unavailable)"), PixelGramSettings.isAgcEnabled(), true);
+                    } else if (position == echoCancellationRow) {
+                        boolean available = AcousticEchoCanceler.isAvailable();
+                        cell.setTextAndCheck("Echo Cancellation" + (available ? "" : " (unavailable)"), PixelGramSettings.isEchoCancellationEnabled(), true);
                     }
                     break;
                 }
@@ -606,7 +641,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 return TYPE_SHADOW;
             } else if (position == headerCredentialsRow || position == headerRecordingRow || position == headerQualityRow || position == headerAudioRow || position == headerUpdatesRow) {
                 return TYPE_HEADER;
-            } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == audioEffectsRow) {
+            } else if (position == debugLoggingRow || position == faceAeMeteringRow
+                    || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow) {
                 return TYPE_CHECK;
             } else if (position == updateInfoRow) {
                 return TYPE_INFO;

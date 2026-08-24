@@ -43,7 +43,9 @@ public class PixelGramSettings {
     private static final String KEY_AUDIO_BITRATE = "audio_bitrate";
     private static final String KEY_DEBUG_LOGGING = "debug_logging_enabled";
     private static final String KEY_VOICE_ENHANCEMENT = "voice_enhancement_mode";
-    private static final String KEY_AUDIO_EFFECTS = "audio_effects_enabled";
+    private static final String KEY_NOISE_SUPPRESSION = "noise_suppression_enabled";
+    private static final String KEY_AGC = "agc_enabled";
+    private static final String KEY_ECHO_CANCELLATION = "echo_cancellation_enabled";
     private static final String KEY_MIC_GAIN = "mic_gain_mode";
 
     public static final int DEFAULT_NOISE_REDUCTION = NOISE_REDUCTION_FAST;
@@ -57,7 +59,9 @@ public class PixelGramSettings {
     // Measured A/B: voice communication runs ~12dB below stock and is unusable; voice
     // recognition + audio effects gives the best speech clarity against background noise.
     public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_VOICE_RECOGNITION;
-    public static final boolean DEFAULT_AUDIO_EFFECTS = true;
+    public static final boolean DEFAULT_NOISE_SUPPRESSION = true;
+    public static final boolean DEFAULT_AGC = true;
+    public static final boolean DEFAULT_ECHO_CANCELLATION = false;
     public static final int DEFAULT_MIC_GAIN = MIC_GAIN_1X;
 
     private static SharedPreferences prefs() {
@@ -151,12 +155,28 @@ public class PixelGramSettings {
         }
     }
 
-    public static boolean isAudioEffectsEnabled() {
-        return prefs().getBoolean(KEY_AUDIO_EFFECTS, DEFAULT_AUDIO_EFFECTS);
+    public static boolean isNoiseSuppressionEnabled() {
+        return prefs().getBoolean(KEY_NOISE_SUPPRESSION, DEFAULT_NOISE_SUPPRESSION);
     }
 
-    public static void setAudioEffectsEnabled(boolean enabled) {
-        prefs().edit().putBoolean(KEY_AUDIO_EFFECTS, enabled).apply();
+    public static void setNoiseSuppressionEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_NOISE_SUPPRESSION, enabled).apply();
+    }
+
+    public static boolean isAgcEnabled() {
+        return prefs().getBoolean(KEY_AGC, DEFAULT_AGC);
+    }
+
+    public static void setAgcEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_AGC, enabled).apply();
+    }
+
+    public static boolean isEchoCancellationEnabled() {
+        return prefs().getBoolean(KEY_ECHO_CANCELLATION, DEFAULT_ECHO_CANCELLATION);
+    }
+
+    public static void setEchoCancellationEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_ECHO_CANCELLATION, enabled).apply();
     }
 
     public static int getMicGainMode() {
@@ -231,7 +251,9 @@ public class PixelGramSettings {
                 .putInt(KEY_AUDIO_BITRATE, DEFAULT_AUDIO_BITRATE)
                 .putBoolean(KEY_DEBUG_LOGGING, DEFAULT_DEBUG_LOGGING)
                 .putInt(KEY_VOICE_ENHANCEMENT, DEFAULT_VOICE_ENHANCEMENT)
-                .putBoolean(KEY_AUDIO_EFFECTS, DEFAULT_AUDIO_EFFECTS)
+                .putBoolean(KEY_NOISE_SUPPRESSION, DEFAULT_NOISE_SUPPRESSION)
+                .putBoolean(KEY_AGC, DEFAULT_AGC)
+                .putBoolean(KEY_ECHO_CANCELLATION, DEFAULT_ECHO_CANCELLATION)
                 .putInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN)
                 .apply();
     }
