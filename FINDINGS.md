@@ -177,6 +177,21 @@ difference (room vs. face), not a bug to chase further right now.
   non-null and explicitly clearing it to 0 otherwise. Confirmed this
   restores correct sky and foliage colour on the rear camera outdoors.
 
+## Audio effect availability on this device (measured 2026-08-23)
+- `AutomaticGainControl.isAvailable()` returns `false` on the Pixel 11 Pro.
+  `NoiseSuppressor.isAvailable()` and `AcousticEchoCanceler.isAvailable()`
+  both return `true`.
+- This means AGC was never actually attached in any measurement taken on
+  this device: the previous bundled "Audio Effects" toggle called
+  `AutomaticGainControl.create()` behind the same `isAvailable()` gate, so
+  it was a no-op here the whole time. Every earlier A/B result labelled
+  "effects on" reflects `NoiseSuppressor` alone, not noise suppression +
+  AGC together - re-read those results with that in mind rather than as a
+  combined-effects comparison.
+- Not necessarily true on other hardware - `isAvailable()` is a HAL/device
+  capability query, so a different phone could support AGC while lacking
+  one of the other two.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
