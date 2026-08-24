@@ -101,6 +101,14 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private static final int TYPE_CHECK = 3;
     private static final int TYPE_INFO = 4;
 
+    // RecyclerListView's click dispatch doesn't consult View.isEnabled(), so a capability-gated
+    // row's own click handler is what actually has to no-op when unavailable (see the
+    // noiseSuppressionRow/agcRow/echoCancellationRow branches in the item click listener below) -
+    // isEnabled(holder) alone only dims the row's checkbox internals, not the row overall, and
+    // doesn't block taps. This alpha is the actual visible "can't use this" affordance; the
+    // "(unavailable)" text suffix stays regardless so the reason is legible even at full alpha.
+    private static final float DISABLED_ROW_ALPHA = 0.5f;
+
     @Override
     public boolean onFragmentCreate() {
         super.onFragmentCreate();
@@ -607,6 +615,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 }
                 case TYPE_CHECK: {
                     TextCheckCell cell = (TextCheckCell) holder.itemView;
+                    // Reset before the per-row branches below - TYPE_CHECK views are recycled
+                    // across all check rows, so a view last bound to a dimmed unavailable row
+                    // must not stay dimmed when rebound to an always-available one.
+                    cell.setAlpha(1f);
                     if (position == debugLoggingRow) {
                         cell.setTextAndCheck("Debug Logging", PixelGramSettings.isDebugLoggingEnabled(), false);
                     } else if (position == faceAeMeteringRow) {
@@ -614,12 +626,15 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     } else if (position == noiseSuppressionRow) {
                         boolean available = NoiseSuppressor.isAvailable();
                         cell.setTextAndCheck("Noise Suppression" + (available ? "" : " (unavailable)"), PixelGramSettings.isNoiseSuppressionEnabled(), true);
+                        cell.setAlpha(available ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == agcRow) {
                         boolean available = AutomaticGainControl.isAvailable();
                         cell.setTextAndCheck("Automatic Gain Control" + (available ? "" : " (unavailable)"), PixelGramSettings.isAgcEnabled(), true);
+                        cell.setAlpha(available ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == echoCancellationRow) {
                         boolean available = AcousticEchoCanceler.isAvailable();
                         cell.setTextAndCheck("Echo Cancellation" + (available ? "" : " (unavailable)"), PixelGramSettings.isEchoCancellationEnabled(), true);
+                        cell.setAlpha(available ? 1f : DISABLED_ROW_ALPHA);
                     }
                     break;
                 }
