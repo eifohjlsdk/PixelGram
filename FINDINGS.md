@@ -235,6 +235,28 @@ difference (room vs. face), not a bug to chase further right now.
   device's own more careful implementation of it - testable by eye, nothing given up if it
   doesn't help.
 
+## Audio matrix measurement (measured 2026-08-29)
+- Test conditions: fixed music source on PC speakers about 35cm behind and left of the phone,
+  phone on a stand, front camera, 10 second recordings. Levels are mean dBFS unless noted.
+- Baseline (default AudioSource, no effects, 1x gain): **-39.1dB mean**.
+- Noise suppression, echo cancellation, and both together all landed within 0.4dB of baseline -
+  they change noise *character*, not *level*. Expected: neither effect is a gain stage.
+- Mic direction measured 0.2dB from baseline with `setPreferredMicrophoneDirection()` returning
+  `true` (applied) - confirms the "no measurable effect" finding above wasn't a fluke; direction
+  is inert on this device by this measure too, not just informally.
+- Mic gain behaved as predicted by the linear multiplier math: 2x gave +6.3dB against a
+  theoretical +6.0dB, 3x gave +9.7dB against a theoretical +9.5dB. Close enough that the
+  remaining ~0.2-0.3dB is consistent with measurement noise, not a scaling error.
+- `MediaRecorder.AudioSource.CAMCORDER` was worth about +4.7dB over the default source at the
+  same gain - a real, repeatable gain difference between audio sources, independent of the mic
+  gain multiplier.
+- Best combination measured: **Camcorder + noise suppression + echo cancellation + 3x gain ->
+  -24.7dB mean, peaks at -6.3dB, no clipping.** This is now the shipped default (see
+  PixelGramSettings.DEFAULT_VOICE_ENHANCEMENT / DEFAULT_NOISE_SUPPRESSION /
+  DEFAULT_ECHO_CANCELLATION / DEFAULT_MIC_GAIN). AGC stays off by default since it's unavailable
+  on this device (see "Audio effect availability" above) - turning it on here would be a no-op.
+  Mic direction stays off by default given the inert result above.
+
 ## Microphone direction preference (measured 2026-08-29)
 - `AudioRecord.setPreferredMicrophoneDirection()` returns `true` on the Pixel 11 Pro (both
   towards-user and away-from-user), but has no measurable effect. The active microphone

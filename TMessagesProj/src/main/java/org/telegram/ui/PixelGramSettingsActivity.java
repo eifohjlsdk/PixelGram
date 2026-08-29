@@ -361,7 +361,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showVoiceEnhancementDialog() {
-        String[] names = {"Off (raw mic)", "Voice communication", "Voice recognition (default)", "Camcorder"};
+        String[] names = {"Off (raw mic)", "Voice communication", "Voice recognition", "Camcorder (default)"};
         int[] values = {
                 PixelGramSettings.VOICE_ENHANCEMENT_OFF,
                 PixelGramSettings.VOICE_ENHANCEMENT_VOICE_COMMUNICATION,
@@ -375,7 +375,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showMicGainDialog() {
-        String[] names = {"1x (off, default)", "1.5x", "2x", "3x"};
+        String[] names = {"1x (off)", "1.5x", "2x", "3x (default)"};
         int[] values = {
                 PixelGramSettings.MIC_GAIN_1X,
                 PixelGramSettings.MIC_GAIN_1_5X,
@@ -387,7 +387,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showMicDirectionDialog() {
-        String[] names = {"Off", "Towards user", "Away from user", "Auto (follows camera, default)"};
+        String[] names = {"Off (default)", "Towards user", "Away from user", "Auto (follows camera)"};
         int[] values = {
                 PixelGramSettings.MIC_DIRECTION_OFF,
                 PixelGramSettings.MIC_DIRECTION_TOWARDS_USER,

@@ -80,14 +80,19 @@ public class PixelGramSettings {
     public static final int DEFAULT_VIDEO_BITRATE = 1_000_000;
     public static final int DEFAULT_AUDIO_BITRATE = 96_000;
     public static final boolean DEFAULT_DEBUG_LOGGING = false;
-    // Measured A/B: voice communication runs ~12dB below stock and is unusable; voice
-    // recognition + audio effects gives the best speech clarity against background noise.
-    public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_VOICE_RECOGNITION;
+    // Set from the controlled matrix measurement on the Pixel 11 Pro (see FINDINGS.md's
+    // "Audio matrix measurement" section) - Camcorder + noise suppression + echo cancellation +
+    // 3x gain was the best combination measured: -24.7dB mean (vs -39.1dB baseline), peaks at
+    // -6.3dB, no clipping. AGC defaults off since AutomaticGainControl.isAvailable() is false on
+    // this device (see the earlier "Audio effect availability" finding) - enabling it here would
+    // be a no-op, not a real choice. Mic direction defaults off since the matrix measured it
+    // 0.2dB from baseline with applied:true, confirming it's inert on this device.
+    public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_CAMCORDER;
     public static final boolean DEFAULT_NOISE_SUPPRESSION = true;
-    public static final boolean DEFAULT_AGC = true;
-    public static final boolean DEFAULT_ECHO_CANCELLATION = false;
-    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_1X;
-    public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_AUTO;
+    public static final boolean DEFAULT_AGC = false;
+    public static final boolean DEFAULT_ECHO_CANCELLATION = true;
+    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_3X;
+    public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
 
     private static SharedPreferences prefs() {
