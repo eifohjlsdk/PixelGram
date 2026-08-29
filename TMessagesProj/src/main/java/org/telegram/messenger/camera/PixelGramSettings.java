@@ -43,6 +43,19 @@ public class PixelGramSettings {
     public static final int MIC_GAIN_2X = 2;
     public static final int MIC_GAIN_3X = 3;
 
+    /** Off: no processing. Bandpass: 90Hz-7kHz filter only. Bandpass + Gate: filter, then a
+     * downward-expander gate. See VoiceIsolationProcessor and FINDINGS.md's design writeup for
+     * why this is scoped to ordinary room noise (HVAC, traffic, handling) and not expected to
+     * do much against a same-band, comparable-level interferer like music. */
+    public static final int VOICE_ISOLATION_OFF = 0;
+    public static final int VOICE_ISOLATION_BANDPASS = 1;
+    public static final int VOICE_ISOLATION_BANDPASS_GATE = 2;
+
+    /** Gate threshold choices, in dBFS against the pre-gain raw signal (this runs before mic
+     * gain - see VoiceIsolationProcessor) - not the post-chain levels in FINDINGS.md's audio
+     * matrix, which were measured after gain. */
+    public static final float[] GATE_THRESHOLD_DB_VALUES = {-50f, -45f, -40f, -35f};
+
     public static final int MIC_DIRECTION_OFF = 0;
     public static final int MIC_DIRECTION_TOWARDS_USER = 1;
     public static final int MIC_DIRECTION_AWAY_FROM_USER = 2;
@@ -68,6 +81,8 @@ public class PixelGramSettings {
     private static final String KEY_MIC_GAIN = "mic_gain_mode";
     private static final String KEY_MIC_DIRECTION_MODE = "mic_direction_mode";
     private static final String KEY_MIC_FIELD_DIMENSION = "mic_field_dimension";
+    private static final String KEY_VOICE_ISOLATION_MODE = "voice_isolation_mode";
+    private static final String KEY_GATE_THRESHOLD_DB = "voice_isolation_gate_threshold_db";
 
     public static final int DEFAULT_NOISE_REDUCTION = NOISE_REDUCTION_FAST;
     public static final int DEFAULT_EDGE_MODE = EDGE_MODE_FAST;
@@ -94,6 +109,10 @@ public class PixelGramSettings {
     public static final int DEFAULT_MIC_GAIN = MIC_GAIN_3X;
     public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
+    // Off by default deliberately - a new, untested-in-the-field processing stage, kept off so
+    // it can be A/B'd against the existing chain rather than silently changing everyone's audio.
+    public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_OFF;
+    public static final float DEFAULT_GATE_THRESHOLD_DB = -45f;
 
     private static SharedPreferences prefs() {
         return ApplicationLoader.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -296,6 +315,22 @@ public class PixelGramSettings {
         prefs().edit().putFloat(KEY_MIC_FIELD_DIMENSION, value).apply();
     }
 
+    public static int getVoiceIsolationMode() {
+        return prefs().getInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE);
+    }
+
+    public static void setVoiceIsolationMode(int mode) {
+        prefs().edit().putInt(KEY_VOICE_ISOLATION_MODE, mode).apply();
+    }
+
+    public static float getVoiceIsolationGateThresholdDb() {
+        return prefs().getFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB);
+    }
+
+    public static void setVoiceIsolationGateThresholdDb(float db) {
+        prefs().edit().putFloat(KEY_GATE_THRESHOLD_DB, db).apply();
+    }
+
     private static Boolean micDirectionSupportedCache;
     private static Boolean micFieldDimensionSupportedCache;
 
@@ -380,6 +415,8 @@ public class PixelGramSettings {
                 .putInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN)
                 .putInt(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE)
                 .putFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION)
+                .putInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE)
+                .putFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB)
                 .apply();
     }
 }

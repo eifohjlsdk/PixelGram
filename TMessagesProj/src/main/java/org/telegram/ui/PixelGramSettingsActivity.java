@@ -87,6 +87,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int micGainRow;
     private int micDirectionRow;
     private int micFieldDimensionRow;
+    private int voiceIsolationRow;
+    private int gateThresholdRow;
     private int divider3Row;
 
     private int resetRow;
@@ -148,6 +150,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
         micGainRow = rowCount++;
         micDirectionRow = rowCount++;
         micFieldDimensionRow = rowCount++;
+        voiceIsolationRow = rowCount++;
+        gateThresholdRow = rowCount++;
         divider3Row = rowCount++;
 
         resetRow = rowCount++;
@@ -239,6 +243,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 if (PixelGramSettings.isMicFieldDimensionSupported()) {
                     showMicFieldDimensionDialog();
                 }
+            } else if (position == voiceIsolationRow) {
+                showVoiceIsolationDialog();
+            } else if (position == gateThresholdRow) {
+                showGateThresholdDialog();
             } else if (position == resetRow) {
                 showResetDialog();
             } else if (position == checkNowRow) {
@@ -417,6 +425,34 @@ public class PixelGramSettingsActivity extends BaseFragment {
         showDialog(builder.create());
     }
 
+    private void showVoiceIsolationDialog() {
+        String[] names = {"Off (default)", "Bandpass", "Bandpass + Gate"};
+        int[] values = {
+                PixelGramSettings.VOICE_ISOLATION_OFF,
+                PixelGramSettings.VOICE_ISOLATION_BANDPASS,
+                PixelGramSettings.VOICE_ISOLATION_BANDPASS_GATE
+        };
+        boolean[] supported = {true, true, true};
+        showModeDialog("Voice Isolation", names, values, supported, voiceIsolationRow, PixelGramSettings::setVoiceIsolationMode);
+    }
+
+    /** Threshold is a float, not one of showModeDialog's int values, same reason as
+     * showMicFieldDimensionDialog - a plain setItems dialog rather than a reuse of that helper. */
+    private void showGateThresholdDialog() {
+        float[] values = PixelGramSettings.GATE_THRESHOLD_DB_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            options[i] = formatGateThreshold(values[i]) + (values[i] == PixelGramSettings.DEFAULT_GATE_THRESHOLD_DB ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Gate Threshold");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setVoiceIsolationGateThresholdDb(values[which]);
+            listAdapter.notifyItemChanged(gateThresholdRow);
+        });
+        showDialog(builder.create());
+    }
+
     private interface IntSetter {
         void set(int value);
     }
@@ -571,6 +607,18 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return String.format(Locale.US, "%.2f", value);
     }
 
+    private static String voiceIsolationName(int mode) {
+        switch (mode) {
+            case PixelGramSettings.VOICE_ISOLATION_BANDPASS: return "Bandpass";
+            case PixelGramSettings.VOICE_ISOLATION_BANDPASS_GATE: return "Bandpass + Gate";
+            default: return "Off";
+        }
+    }
+
+    private static String formatGateThreshold(float db) {
+        return String.format(Locale.US, "%.0f dB", db);
+    }
+
     private static String voiceEnhancementName(int mode) {
         switch (mode) {
             case PixelGramSettings.VOICE_ENHANCEMENT_VOICE_COMMUNICATION: return "Voice communication";
@@ -609,6 +657,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || pos == micGainRow
                     || (pos == micDirectionRow && PixelGramSettings.isMicDirectionSupported())
                     || (pos == micFieldDimensionRow && PixelGramSettings.isMicFieldDimensionSupported())
+                    || pos == voiceIsolationRow || pos == gateThresholdRow
                     || pos == resetRow || pos == checkNowRow;
         }
 
@@ -693,8 +742,12 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setAlpha(supported ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == micFieldDimensionRow) {
                         boolean supported = PixelGramSettings.isMicFieldDimensionSupported();
-                        cell.setTextAndValue("Microphone Field Dimension" + (supported ? "" : " (unavailable)"), formatMicFieldDimension(PixelGramSettings.getMicFieldDimension()), false);
+                        cell.setTextAndValue("Microphone Field Dimension" + (supported ? "" : " (unavailable)"), formatMicFieldDimension(PixelGramSettings.getMicFieldDimension()), true);
                         cell.setAlpha(supported ? 1f : DISABLED_ROW_ALPHA);
+                    } else if (position == voiceIsolationRow) {
+                        cell.setTextAndValue("Voice Isolation", voiceIsolationName(PixelGramSettings.getVoiceIsolationMode()), true);
+                    } else if (position == gateThresholdRow) {
+                        cell.setTextAndValue("Gate Threshold", formatGateThreshold(PixelGramSettings.getVoiceIsolationGateThresholdDb()), false);
                     } else if (position == resetRow) {
                         cell.setCanDisable(true);
                         cell.setTextColor(Theme.getColor(Theme.key_text_RedRegular));

@@ -97,6 +97,7 @@ import org.telegram.messenger.camera.CameraSession;
 import org.telegram.messenger.camera.PixelCameraLog;
 import org.telegram.messenger.camera.PixelGramSettings;
 import org.telegram.messenger.camera.Size;
+import org.telegram.messenger.camera.VoiceIsolationProcessor;
 import org.telegram.messenger.video.MP4Builder;
 import org.telegram.messenger.video.Mp4Movie;
 import org.telegram.tgnet.ConnectionsManager;
@@ -2213,6 +2214,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         private InstantCameraVideoEncoderOverlayHelper overlayHelper;
 
         private AudioRecord audioRecorder;
+        // Fresh per recording, same lifecycle as audioRecorder above - see
+        // VoiceIsolationProcessor's class doc for why it can't be a shared/static instance.
+        private VoiceIsolationProcessor voiceIsolationProcessor;
         private NoiseSuppressor audioNoiseSuppressor;
         private AutomaticGainControl audioAutomaticGainControl;
         private AcousticEchoCanceler audioEchoCanceler;
@@ -2275,6 +2279,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         byteBuffer.rewind();
                         readResult = audioRecorder.read(byteBuffer, 2048);
                         if (readResult > 0) {
+                            if (voiceIsolationProcessor != null) {
+                                voiceIsolationProcessor.process(byteBuffer, readResult);
+                            }
                             PixelGramSettings.applyMicGain(byteBuffer, readResult);
                         }
                         if (readResult > 0 && a % 2 == 0) {
@@ -3256,6 +3263,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 skippedTime = 0;
 
                 audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+                voiceIsolationProcessor = new VoiceIsolationProcessor(audioSampleRate);
                 // Each effect is independently gated on its own setting and isAvailable() check.
                 // Actual enabled state is read back via getEnabled() (not assumed from the
                 // setEnabled() call we just made) since AOSP documents that some devices insert
@@ -3405,7 +3413,8 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " echoCancellation:" + echoCancellationActuallyEnabled
                             + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x"
                             + " micDirection:" + (currentMicDirection != null ? currentMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
-                            + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")");
+                            + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")"
+                            + " voiceIsolation:" + PixelGramSettings.getVoiceIsolationMode() + " gateThreshold:" + PixelGramSettings.getVoiceIsolationGateThresholdDb());
                 }
 
                 AndroidUtilities.runOnUIThread(() -> {

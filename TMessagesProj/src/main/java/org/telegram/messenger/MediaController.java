@@ -1076,6 +1076,9 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
     private boolean audioRecorderPaused;
     private AudioRecord audioRecorder;
+    // Fresh per recording, same lifecycle as audioRecorder above - see
+    // VoiceIsolationProcessor's class doc for why it can't be a shared/static instance.
+    private org.telegram.messenger.camera.VoiceIsolationProcessor voiceIsolationProcessor;
     private NoiseSuppressor audioNoiseSuppressor;
     private AutomaticGainControl audioAutomaticGainControl;
     private AcousticEchoCanceler audioEchoCanceler;
@@ -1129,6 +1132,9 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 int len = audioRecorder.read(buffer, buffer.capacity());
                 if (len > 0) {
                     buffer.limit(len);
+                    if (voiceIsolationProcessor != null) {
+                        voiceIsolationProcessor.process(buffer, len);
+                    }
                     PixelGramSettings.applyMicGain(buffer, len);
                     double sum = 0;
                     try {
@@ -4792,6 +4798,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 //                        MediaDataController.getInstance(recordingCurrentAccount).pushDraftVoiceMessage(recordDialogId, recordTopicId, null);
 //
                         audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                        voiceIsolationProcessor = new org.telegram.messenger.camera.VoiceIsolationProcessor(sampleRate);
                         attachAudioEffects();
                         applyMicPreferences();
                         recordStartTime = System.currentTimeMillis();
@@ -4871,6 +4878,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
                 audioRecorderPaused = false;
                 audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                voiceIsolationProcessor = new org.telegram.messenger.camera.VoiceIsolationProcessor(sampleRate);
                 attachAudioEffects();
                 applyMicPreferences();
                 recordStartTime = System.currentTimeMillis();

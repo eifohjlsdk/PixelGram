@@ -257,6 +257,20 @@ difference (room vs. face), not a bug to chase further right now.
   on this device (see "Audio effect availability" above) - turning it on here would be a no-op.
   Mic direction stays off by default given the inert result above.
 
+## Voice isolation measurement (measured 2026-08-29)
+- Bandpass (90Hz high-pass + 7kHz low-pass, cascaded biquads) reduced sub-120Hz energy by
+  2.4dB against a 1.7dB overall level drop - most of the removed energy is genuinely
+  out-of-band rumble/handling noise, not speech content, as intended.
+- The gate (downward expander below threshold, applied after the bandpass) produced about
+  11dB of additional suppression during silence, while tracking within 1dB of bandpass-alone
+  during actual speech - i.e. the gate is doing real work in the gaps without measurably
+  touching the signal when someone is talking. Consistent with the hold-time/slow-release
+  design intended to avoid chattering on pauses.
+- This is against ordinary room noise (the intended target), not the music-at-35cm fixture
+  used for the audio-level matrix below - see "Custom tone curve"/voice-isolation design notes
+  elsewhere in this file for why that specific fixture is a much harder case this isn't
+  expected to help with.
+
 ## Microphone direction preference (measured 2026-08-29)
 - `AudioRecord.setPreferredMicrophoneDirection()` returns `true` on the Pixel 11 Pro (both
   towards-user and away-from-user), but has no measurable effect. The active microphone
