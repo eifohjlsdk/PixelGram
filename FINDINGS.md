@@ -192,6 +192,49 @@ difference (room vs. face), not a bug to chase further right now.
   capability query, so a different phone could support AGC while lacking
   one of the other two.
 
+## Custom tonemap curve for backlit round video: investigated, dropped (2026-08-29)
+- Round video sets no `CaptureRequest.TONEMAP_MODE` anywhere in `Camera2Session` - confirmed by
+  reading back the actual applied `CaptureResult.TONEMAP_MODE` during a real recording:
+  `TONEMAP_MODE_FAST` (value 1), the `TEMPLATE_RECORD` HAL default. (Note for future reference:
+  the real enum is `0=CONTRAST_CURVE, 1=FAST, 2=HIGH_QUALITY, 3=GAMMA_VALUE, 4=PRESET_CURVE` -
+  there is no `OFF` value for tonemap.) `TONEMAP_AVAILABLE_TONE_MAP_MODES=[0,1,2]` on both
+  cameras, so `CONTRAST_CURVE`/`FAST`/`HIGH_QUALITY` are all available; `TONEMAP_MAX_CURVE_POINTS`
+  is 81.
+- Considered driving `CONTROL_AE_REGIONS` (face-metered exposure, already implemented) together
+  with a custom `TONEMAP_CURVE` to fix backlit round video: subject correctly exposed without
+  the window behind blowing out. A tonemap curve is a genuinely different lever from exposure
+  compensation - it reshapes the *already-captured* dynamic range non-uniformly (lift shadows,
+  roll off highlights, simultaneously, in one frame) instead of shifting the whole histogram by
+  one scalar - so it's the right *category* of tool for dynamic-range compression.
+- **Dropped anyway.** Per the Camera2 metadata contract, switching to
+  `TONEMAP_MODE_CONTRAST_CURVE` doesn't add a custom curve on top of the device's own tone
+  mapping - it replaces it entirely: "All color enhancement and tonemapping must be disabled,
+  except for applying the tonemapping curve... 3D color look-up tables, selective chroma
+  enhancement, or other non-linear color transforms will be disabled." `FAST`/`HIGH_QUALITY` are
+  documented as potentially applying scene-dependent, spatially non-global processing that a
+  single static curve can't replicate. That makes a fixed curve a bad trade on its own terms:
+  strong enough to help a real backlit shot, it visibly flattens contrast and shifts color/skin
+  tone in every ordinary shot; gentle enough to be safe normally, it does nothing useful for a
+  real backlit shot, since the highlight compression needed scales with how far over the
+  sensor's headroom the backlight actually is, and that varies shot to shot.
+- **A fixed curve fundamentally can't solve this** - it would need to be adaptive, chosen or
+  interpolated per-frame from a measurement of how blown-out the frame actually is (e.g. a
+  clipping-fraction estimate from decoded frame luma, not anything available directly on
+  `CaptureResult`), swapped on a throttle to avoid a visible curve-swap "pumping" artifact. That
+  is real scene-classification work substantially beyond what face-AE required, and even an
+  adaptive curve can't recover a window that was already clipped at the sensor before the curve
+  ever runs - tonemap curves only remap already-captured values, they can't invent detail that
+  was never captured. Not pursuing this further; see "Tone mapping quality" below for what
+  shipped instead - the same idea in the cheap, safe form (choosing between the device's own two
+  tonemap qualities, not replacing them).
+
+## Tone mapping quality control (2026-08-29)
+- Added a "Tone Mapping" row (Fast / High Quality, default Fast - matches this device's prior
+  default) instead of the custom-curve approach above. This keeps 100% of Google's own tone
+  mapping pipeline (color enhancement, adaptive/non-global processing) and just asks for the
+  device's own more careful implementation of it - testable by eye, nothing given up if it
+  doesn't help.
+
 ## Microphone direction preference (measured 2026-08-29)
 - `AudioRecord.setPreferredMicrophoneDirection()` returns `true` on the Pixel 11 Pro (both
   towards-user and away-from-user), but has no measurable effect. The active microphone

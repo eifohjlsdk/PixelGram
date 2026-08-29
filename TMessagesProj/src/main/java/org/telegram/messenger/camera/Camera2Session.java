@@ -84,6 +84,7 @@ public class Camera2Session {
     private boolean faceDetectFullSupported;
     private int[] availableNoiseReductionModes = new int[0];
     private int[] availableEdgeModes = new int[0];
+    private int[] availableTonemapModes = new int[0];
     private Range<Integer> exposureCompensationRange;
     private Rational exposureCompensationStep;
     private int maxRegionsAe;
@@ -227,6 +228,7 @@ public class Camera2Session {
             faceDetectFullSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES, CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL, "STATISTICS_FACE_DETECT_MODE_FULL");
             availableNoiseReductionModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES);
             availableEdgeModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
+            availableTonemapModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES);
             exposureCompensationRange = cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
             exposureCompensationStep = cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
             maxRegionsAe = checkMaxRegionsAe(cameraCharacteristics, cameraId, isFront);
@@ -310,6 +312,18 @@ public class Camera2Session {
         return null;
     }
 
+    /** Same fallback shape as resolveNoiseReductionMode(), for TONEMAP_MODE. Only FAST/HIGH_
+     * QUALITY are ever offered in settings (no OFF - see FINDINGS.md's tone-mapping
+     * investigation for why a custom CONTRAST_CURVE isn't worth the tradeoff, so this stays a
+     * choice between the device's own two built-in tonemap qualities). */
+    private Integer resolveTonemapMode() {
+        int preferred = PixelGramSettings.getTonemapMode();
+        if (supportsMode(availableTonemapModes, preferred)) return preferred;
+        if (supportsMode(availableTonemapModes, CameraMetadata.TONEMAP_MODE_FAST)) return CameraMetadata.TONEMAP_MODE_FAST;
+        if (supportsMode(availableTonemapModes, CameraMetadata.TONEMAP_MODE_HIGH_QUALITY)) return CameraMetadata.TONEMAP_MODE_HIGH_QUALITY;
+        return null;
+    }
+
     /** Converts the user's exposure-compensation EV setting to steps against this camera's
      * cached CONTROL_AE_COMPENSATION_RANGE/_STEP, clamped to range. Null if unavailable. */
     private Integer resolveExposureCompensationSteps() {
@@ -334,6 +348,13 @@ public class Camera2Session {
         if (mode == CameraMetadata.EDGE_MODE_OFF) return "off";
         if (mode == CameraMetadata.EDGE_MODE_FAST) return "fast";
         if (mode == CameraMetadata.EDGE_MODE_HIGH_QUALITY) return "hq";
+        return String.valueOf(mode);
+    }
+
+    private static String tonemapModeName(Integer mode) {
+        if (mode == null) return "none";
+        if (mode == CameraMetadata.TONEMAP_MODE_FAST) return "fast";
+        if (mode == CameraMetadata.TONEMAP_MODE_HIGH_QUALITY) return "hq";
         return String.valueOf(mode);
     }
 
@@ -362,6 +383,7 @@ public class Camera2Session {
 
         sb.append(" nr:").append(noiseReductionModeName(resolveNoiseReductionMode()));
         sb.append(" edge:").append(edgeModeName(resolveEdgeMode()));
+        sb.append(" tonemap:").append(tonemapModeName(resolveTonemapMode()));
         sb.append(" eis:").append(videoStabilizationSupported ? "on" : "n/a");
         sb.append(" ois:").append(opticalStabilizationSupported ? "on" : "n/a");
         sb.append(" aeregions:").append((maxRegionsAe > 0 && PixelGramSettings.isFaceAeMeteringEnabled()) ? 1 : 0);
@@ -401,6 +423,12 @@ public class Camera2Session {
         CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
         if (characteristics == null) return new int[0];
         return queryAvailableModes(characteristics, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
+    }
+
+    public static int[] queryAvailableTonemapModes(boolean front) {
+        CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
+        if (characteristics == null) return new int[0];
+        return queryAvailableModes(characteristics, CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES);
     }
 
     public static Range<Integer> queryExposureCompensationRange(boolean front) {
@@ -845,6 +873,15 @@ public class Camera2Session {
                         captureRequestBuilder.set(CaptureRequest.NOISE_REDUCTION_MODE, noiseReductionMode);
                     } catch (Exception e) {
                         PixelCameraLog.w("camera #" + cameraId + ": NOISE_REDUCTION_MODE set failed", e);
+                    }
+                }
+
+                Integer tonemapMode = resolveTonemapMode();
+                if (tonemapMode != null) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.TONEMAP_MODE, tonemapMode);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": TONEMAP_MODE set failed", e);
                     }
                 }
 

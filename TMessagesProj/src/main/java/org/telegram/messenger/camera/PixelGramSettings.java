@@ -27,6 +27,12 @@ public class PixelGramSettings {
     public static final int EDGE_MODE_FAST = CameraMetadata.EDGE_MODE_FAST;
     public static final int EDGE_MODE_HIGH_QUALITY = CameraMetadata.EDGE_MODE_HIGH_QUALITY;
 
+    // No OFF option - tonemap has no OFF mode in the Camera2 API at all. See FINDINGS.md's
+    // tone-mapping investigation for why this stays a choice between the device's own two
+    // built-in qualities rather than a custom CONTRAST_CURVE.
+    public static final int TONEMAP_MODE_FAST = CameraMetadata.TONEMAP_MODE_FAST;
+    public static final int TONEMAP_MODE_HIGH_QUALITY = CameraMetadata.TONEMAP_MODE_HIGH_QUALITY;
+
     public static final int VOICE_ENHANCEMENT_OFF = 0;
     public static final int VOICE_ENHANCEMENT_VOICE_COMMUNICATION = 1;
     public static final int VOICE_ENHANCEMENT_VOICE_RECOGNITION = 2;
@@ -48,6 +54,7 @@ public class PixelGramSettings {
 
     private static final String KEY_NOISE_REDUCTION = "noise_reduction_mode";
     private static final String KEY_EDGE_MODE = "edge_mode";
+    private static final String KEY_TONEMAP_MODE = "tonemap_mode";
     private static final String KEY_FACE_AE_METERING = "face_ae_metering";
     private static final String KEY_EXPOSURE_COMPENSATION = "exposure_compensation_ev";
     private static final String KEY_RESOLUTION = "resolution";
@@ -64,6 +71,9 @@ public class PixelGramSettings {
 
     public static final int DEFAULT_NOISE_REDUCTION = NOISE_REDUCTION_FAST;
     public static final int DEFAULT_EDGE_MODE = EDGE_MODE_FAST;
+    // Matches what this device already used before this setting existed (confirmed by reading
+    // back the actual applied CaptureResult.TONEMAP_MODE - see FINDINGS.md).
+    public static final int DEFAULT_TONEMAP_MODE = TONEMAP_MODE_FAST;
     public static final boolean DEFAULT_FACE_AE_METERING = true;
     public static final float DEFAULT_EXPOSURE_COMPENSATION = 0.3f;
     public static final int DEFAULT_RESOLUTION = 448;
@@ -98,6 +108,14 @@ public class PixelGramSettings {
 
     public static void setEdgeMode(int mode) {
         prefs().edit().putInt(KEY_EDGE_MODE, mode).apply();
+    }
+
+    public static int getTonemapMode() {
+        return prefs().getInt(KEY_TONEMAP_MODE, DEFAULT_TONEMAP_MODE);
+    }
+
+    public static void setTonemapMode(int mode) {
+        prefs().edit().putInt(KEY_TONEMAP_MODE, mode).apply();
     }
 
     public static boolean isFaceAeMeteringEnabled() {
@@ -343,6 +361,7 @@ public class PixelGramSettings {
         prefs().edit()
                 .putInt(KEY_NOISE_REDUCTION, DEFAULT_NOISE_REDUCTION)
                 .putInt(KEY_EDGE_MODE, DEFAULT_EDGE_MODE)
+                .putInt(KEY_TONEMAP_MODE, DEFAULT_TONEMAP_MODE)
                 .putBoolean(KEY_FACE_AE_METERING, DEFAULT_FACE_AE_METERING)
                 .putFloat(KEY_EXPOSURE_COMPENSATION, DEFAULT_EXPOSURE_COMPENSATION)
                 .putInt(KEY_RESOLUTION, DEFAULT_RESOLUTION)

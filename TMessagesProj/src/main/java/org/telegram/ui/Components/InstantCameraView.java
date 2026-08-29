@@ -3397,6 +3397,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     PixelCameraLog.marker("round video " + videoWidth + "x" + videoHeight
                             + " video:" + videoBitrate + " audio:" + PixelGramSettings.getAudioBitrate()
                             + " nr:" + PixelGramSettings.getNoiseReductionMode() + " edge:" + PixelGramSettings.getEdgeMode()
+                            + " tonemap:" + PixelGramSettings.getTonemapMode()
                             + " ev:" + PixelGramSettings.getExposureCompensationEv()
                             + " voiceEnhancement:" + PixelGramSettings.getVoiceEnhancementMode()
                             + " noiseSuppression:" + noiseSuppressionActuallyEnabled

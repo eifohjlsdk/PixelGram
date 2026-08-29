@@ -74,6 +74,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int headerQualityRow;
     private int noiseReductionRow;
     private int edgeModeRow;
+    private int tonemapModeRow;
     private int faceAeMeteringRow;
     private int exposureCompensationRow;
     private int divider2Row;
@@ -134,6 +135,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
         headerQualityRow = rowCount++;
         noiseReductionRow = rowCount++;
         edgeModeRow = rowCount++;
+        tonemapModeRow = rowCount++;
         faceAeMeteringRow = rowCount++;
         exposureCompensationRow = rowCount++;
         divider2Row = rowCount++;
@@ -196,6 +198,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 showNoiseReductionDialog();
             } else if (position == edgeModeRow) {
                 showEdgeModeDialog();
+            } else if (position == tonemapModeRow) {
+                showTonemapModeDialog();
             } else if (position == faceAeMeteringRow) {
                 PixelGramSettings.setFaceAeMeteringEnabled(!PixelGramSettings.isFaceAeMeteringEnabled());
                 ((TextCheckCell) view).setChecked(PixelGramSettings.isFaceAeMeteringEnabled());
@@ -347,6 +351,13 @@ public class PixelGramSettingsActivity extends BaseFragment {
         int[] values = {PixelGramSettings.EDGE_MODE_OFF, PixelGramSettings.EDGE_MODE_FAST, PixelGramSettings.EDGE_MODE_HIGH_QUALITY};
         boolean[] supported = supportedIntersection(values, Camera2Session.queryAvailableEdgeModes(true), Camera2Session.queryAvailableEdgeModes(false));
         showModeDialog("Edge Mode", names, values, supported, edgeModeRow, PixelGramSettings::setEdgeMode);
+    }
+
+    private void showTonemapModeDialog() {
+        String[] names = {"Fast (default)", "High Quality"};
+        int[] values = {PixelGramSettings.TONEMAP_MODE_FAST, PixelGramSettings.TONEMAP_MODE_HIGH_QUALITY};
+        boolean[] supported = supportedIntersection(values, Camera2Session.queryAvailableTonemapModes(true), Camera2Session.queryAvailableTonemapModes(false));
+        showModeDialog("Tone Mapping", names, values, supported, tonemapModeRow, PixelGramSettings::setTonemapMode);
     }
 
     private void showVoiceEnhancementDialog() {
@@ -533,6 +544,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return String.valueOf(mode);
     }
 
+    private static String tonemapModeName(int mode) {
+        return mode == PixelGramSettings.TONEMAP_MODE_HIGH_QUALITY ? "High Quality" : "Fast";
+    }
+
     private static String formatMicGain(int mode) {
         switch (mode) {
             case PixelGramSettings.MIC_GAIN_1_5X: return "1.5x";
@@ -586,7 +601,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
             return pos == apiCredentialsRow
                     || pos == resolutionRow || pos == videoBitrateRow || pos == audioBitrateRow
                     || pos == debugLoggingRow
-                    || pos == noiseReductionRow || pos == edgeModeRow || pos == faceAeMeteringRow || pos == exposureCompensationRow
+                    || pos == noiseReductionRow || pos == edgeModeRow || pos == tonemapModeRow || pos == faceAeMeteringRow || pos == exposureCompensationRow
                     || pos == voiceEnhancementRow
                     || (pos == noiseSuppressionRow && NoiseSuppressor.isAvailable())
                     || (pos == agcRow && AutomaticGainControl.isAvailable())
@@ -664,6 +679,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndValue("Noise Reduction", modeName(PixelGramSettings.getNoiseReductionMode(), PixelGramSettings.NOISE_REDUCTION_OFF, PixelGramSettings.NOISE_REDUCTION_FAST, PixelGramSettings.NOISE_REDUCTION_HIGH_QUALITY), true);
                     } else if (position == edgeModeRow) {
                         cell.setTextAndValue("Edge Mode", modeName(PixelGramSettings.getEdgeMode(), PixelGramSettings.EDGE_MODE_OFF, PixelGramSettings.EDGE_MODE_FAST, PixelGramSettings.EDGE_MODE_HIGH_QUALITY), true);
+                    } else if (position == tonemapModeRow) {
+                        cell.setTextAndValue("Tone Mapping", tonemapModeName(PixelGramSettings.getTonemapMode()), true);
                     } else if (position == exposureCompensationRow) {
                         cell.setTextAndValue("Exposure Compensation", formatEv(PixelGramSettings.getExposureCompensationEv()), false);
                     } else if (position == voiceEnhancementRow) {
