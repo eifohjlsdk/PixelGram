@@ -1156,6 +1156,12 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         }
         isFrontface = !isFrontface;
         updateFlash();
+        if (videoEncoder != null) {
+            // Direction is otherwise fixed at AudioRecord construction time - see
+            // VideoRecorder.reapplyMicDirection() for why this needs to be re-driven here so
+            // Auto mode actually follows the camera that's now active.
+            videoEncoder.reapplyMicDirection();
+        }
         if (useCamera2) {
             if (bothCameras) {
                 camera2SessionCurrent = camera2Sessions[isFrontface ? 0 : 1];
@@ -2211,6 +2217,12 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         private AutomaticGainControl audioAutomaticGainControl;
         private AcousticEchoCanceler audioEchoCanceler;
 
+        // Set in prepareEncoder() and re-set by reapplyMicDirection() when the camera flips
+        // mid-recording - see reapplyMicDirection() below for why this needs to be revisited at
+        // all rather than left as a one-time value from construction.
+        private Integer currentMicDirection;
+        private boolean micDirectionApplied;
+
         private ArrayBlockingQueue<AudioBufferInfo> buffers = new ArrayBlockingQueue<>(10);
         private ArrayList<Bitmap> keyframeThumbs = new ArrayList<>();
         private DispatchQueue generateKeyframeThumbsQueue;
@@ -3177,6 +3189,34 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             }
         }
 
+        /** Mic direction is otherwise fixed at AudioRecord construction time in
+         * prepareEncoder() and never revisited - switchCamera() flips isFrontface but never
+         * touched audioRecorder at all, so Auto mode (which is supposed to follow whichever
+         * camera is active) silently kept using whatever direction was resolved when recording
+         * started, even after a mid-recording camera flip. Called from switchCamera() right
+         * after isFrontface flips so Auto actually tracks the active camera; explicit Towards
+         * user/Away from user selections re-resolve to the same value either way, so this is a
+         * harmless no-op for them beyond re-calling the setter. No-op if not currently recording
+         * (audioRecorder not yet created, or already released) or if the device doesn't support
+         * the setter at all. Field dimension doesn't depend on which camera is active, so it
+         * isn't reapplied here - only construction-time application applies to it. */
+        void reapplyMicDirection() {
+            if (!started || audioRecorder == null) {
+                return;
+            }
+            currentMicDirection = PixelGramSettings.resolveMicDirection(isFrontface);
+            micDirectionApplied = false;
+            if (currentMicDirection != null && PixelGramSettings.isMicDirectionSupported()) {
+                try {
+                    micDirectionApplied = audioRecorder.setPreferredMicrophoneDirection(currentMicDirection);
+                } catch (Exception e) {
+                    PixelCameraLog.w("failed to reapply microphone direction after camera switch", e);
+                }
+            }
+            PixelCameraLog.d("mic direction reapplied after camera switch: isFrontface=" + isFrontface
+                    + " requested=" + (currentMicDirection != null ? currentMicDirection : "off") + " applied=" + micDirectionApplied);
+        }
+
         private void prepareEncoder(boolean fromPause) {
             setBluetoothScoOn(true);
 
@@ -3259,14 +3299,17 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 // camera is (the subject is in front of whichever camera is active). Gated on
                 // the one-time capability probe (see PixelGramSettings.isMicDirectionSupported/
                 // isMicFieldDimensionSupported) so we don't bother calling a setter we already
-                // know this device won't honor.
-                Integer requestedMicDirection = PixelGramSettings.resolveMicDirection(isFrontface);
-                boolean micDirectionApplied = false;
+                // know this device won't honor. currentMicDirection/micDirectionApplied are
+                // fields (not locals) so reapplyMicDirection() can update them when the camera
+                // switches mid-recording - direction is otherwise fixed at AudioRecord
+                // construction time and never revisited on its own.
+                currentMicDirection = PixelGramSettings.resolveMicDirection(isFrontface);
+                micDirectionApplied = false;
                 float requestedMicFieldDimension = PixelGramSettings.getMicFieldDimension();
                 boolean micFieldDimensionApplied = false;
                 try {
-                    if (requestedMicDirection != null && PixelGramSettings.isMicDirectionSupported()) {
-                        micDirectionApplied = audioRecorder.setPreferredMicrophoneDirection(requestedMicDirection);
+                    if (currentMicDirection != null && PixelGramSettings.isMicDirectionSupported()) {
+                        micDirectionApplied = audioRecorder.setPreferredMicrophoneDirection(currentMicDirection);
                     }
                     if (PixelGramSettings.isMicFieldDimensionSupported()) {
                         micFieldDimensionApplied = audioRecorder.setPreferredMicrophoneFieldDimension(requestedMicFieldDimension);
@@ -3274,7 +3317,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 } catch (Exception e) {
                     PixelCameraLog.w("failed to apply microphone direction/field dimension preferences", e);
                 }
-                PixelCameraLog.d("mic direction requested=" + (requestedMicDirection != null ? requestedMicDirection : "off (isFrontface=" + isFrontface + ")")
+                PixelCameraLog.d("mic direction requested=" + (currentMicDirection != null ? currentMicDirection : "off (isFrontface=" + isFrontface + ")")
                         + " applied=" + micDirectionApplied
                         + ", fieldDimension requested=" + requestedMicFieldDimension + " applied=" + micFieldDimensionApplied);
 
@@ -3360,7 +3403,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " agc:" + agcActuallyEnabled
                             + " echoCancellation:" + echoCancellationActuallyEnabled
                             + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x"
-                            + " micDirection:" + (requestedMicDirection != null ? requestedMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
+                            + " micDirection:" + (currentMicDirection != null ? currentMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
                             + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")");
                 }
 

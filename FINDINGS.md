@@ -192,6 +192,28 @@ difference (room vs. face), not a bug to chase further right now.
   capability query, so a different phone could support AGC while lacking
   one of the other two.
 
+## Microphone direction preference (measured 2026-08-29)
+- `AudioRecord.setPreferredMicrophoneDirection()` returns `true` on the Pixel 11 Pro (both
+  towards-user and away-from-user), but has no measurable effect. The active microphone
+  reported by `getActiveMicrophones()` stays `address="bottom"` either way, and matched
+  recordings (preference on vs. off) show no consistent audio level difference. A `true`
+  return only means the platform accepted the request, not that it changed anything audible
+  on this hardware - a different device could behave differently.
+- `getActiveMicrophones()` has a metadata race worth knowing about, since it will confuse
+  anyone reading that API's output: immediately after `startRecording()`, the framework's
+  `native_get_active_microphones()` call comes back empty for the newly-active input (or its
+  entries get filtered out by `AudioManager.setPortIdForMicrophones()` failing to match the
+  current input port), so `AudioRecord.getActiveMicrophones()` falls back to
+  `AudioManager.microphoneInfoFromAudioDeviceInfo(getRoutedDevice())` - a `MicrophoneInfo`
+  built from nothing but the routed device, with `description="21"` (empty port name + numeric
+  device id), `group=-1/-1`, and `directionality`/`position`/`orientation` all `UNKNOWN`. It
+  settles to the full HAL-declared entry (`description="builtin_mic_1"`, `group=0/0`,
+  `directionality=OMNI`, real `position`/`orientation` coordinates) about 1.5 seconds into the
+  recording, confirmed by re-querying at that point in two separate test recordings. An idle
+  probe that never calls `startRecording()` at all is permanently stuck in that same fallback,
+  since there's never an active capture stream for the enrichment lookup to resolve against -
+  it isn't a special case, it's the same branch with no active input to ever get past.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
