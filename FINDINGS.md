@@ -302,6 +302,46 @@ difference (room vs. face), not a bug to chase further right now.
   matrix - gain and voice isolation defaults here are set from the settled design/headroom
   reasoning above, expected to be retuned by ear once tested.
 
+## AAC profile pinned; AVC profile/level measured (2026-08-29)
+- Set `MediaFormat.KEY_AAC_PROFILE` to `AACObjectLC` explicitly on the round-video audio
+  encoder, matching what Telegram X deliberately sets and stock leaves to codec default (see
+  the client comparison below).
+- We never request a video profile or level anywhere in `Camera2Session`/`InstantCameraView`.
+  Read back the actually-configured `MediaCodec`'s output format on this device (via a
+  temporary log at the `INFO_OUTPUT_FORMAT_CHANGED` callback, since removed): `profile=8`
+  (`AVCProfileHigh`), `level=256` (`AVCLevel3`). The codec already resolves to **High profile**
+  on its own - not Baseline. The premise for testing an explicit High-profile override doesn't
+  hold on this device, so that test wasn't run; CABAC/B-frames are presumably already in play
+  via the codec's own default choice. This is a per-device HAL default, not guaranteed
+  elsewhere - a different device's default encoder could resolve differently.
+
+## Client comparison: round video across stock, Telegram X, Cherrygram, us (2026-08-29)
+- Fetched `github.com/TGX-Android/Telegram-X` (independent implementation) and used the
+  existing `~/dev/cherrygram-ref` checkout (fork of the same stock base we started from).
+- **No client ships HEVC for round video.** Stock, Telegram X, Cherrygram, and us all hardcode
+  `video/avc`. This is universal, not a case of everyone else having moved on without us - no
+  client has tested whether Telegram's servers or other clients actually accept an HEVC round
+  video, so there's no existing precedent to lean on either way if we were to try it.
+- **No client attaches any `AudioEffect` or applies any PCM-level processing to round-video
+  audio besides us.** No `NoiseSuppressor`/`AutomaticGainControl`/`AcousticEchoCanceler`, no
+  mic direction/field dimension, no gain or DSP on the raw PCM anywhere in stock, Telegram X's
+  `RoundVideoRecorder.java`, or Cherrygram's `InstantCameraView.java` - confirmed by grep across
+  each full source tree. Our audio-effects/mic-gain/voice-isolation work has no counterpart in
+  any of the three other trees; it isn't something everyone else already tried and rejected.
+- **Cherrygram's FPS range picker has the same bug we fixed.** `CherrygramCameraConfig`
+  exposes a user-facing `cameraXFpsRange` setting including a "30 to 60" option
+  (`CameraXFpsRange30to60`), applied to `CONTROL_AE_TARGET_FPS_RANGE` with no check against
+  `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` before setting it - the exact upstream bug this
+  worktree fixed (see "Correction to 'Stock Telegram never sets CONTROL_AE_TARGET_FPS_RANGE'"
+  above): if `[30,60]` isn't actually in the sensor's available range list, the HAL is free to
+  silently ignore it and free-run, the same way stock's hardcoded `(30,60)` did on this device.
+  Cherrygram's other options (`25to30`, `30to30`, `60to60`) aren't verified against
+  per-camera-per-device availability either - only `30to30` happens to be safe on sensors like
+  this one that report a fixed `[30,30]` range.
+- Full client-by-client detail (resolution/bitrate, audio source, encoder settings, which
+  Camera2 keys each one sets) is in the session notes; not duplicated here to keep this file to
+  measured/decided facts rather than a full research writeup.
+
 ## Microphone direction preference (measured 2026-08-29)
 - `AudioRecord.setPreferredMicrophoneDirection()` returns `true` on the Pixel 11 Pro (both
   towards-user and away-from-user), but has no measurable effect. The active microphone

@@ -3360,6 +3360,10 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 audioFormat.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
                 audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, PixelGramSettings.getAudioBitrate());
                 audioFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2048 * AudioBufferInfo.MAX_SAMPLES);
+                // Explicit, matching what Telegram X deliberately sets and stock leaves to codec
+                // default (see FINDINGS.md's client comparison) - pins the profile rather than
+                // trusting whatever the encoder would otherwise pick.
+                audioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
 
                 audioEncoder = MediaCodec.createEncoderByType(AUDIO_MIME_TYPE);
                 audioEncoder.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
