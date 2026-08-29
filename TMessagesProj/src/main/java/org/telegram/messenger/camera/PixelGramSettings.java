@@ -102,14 +102,15 @@ public class PixelGramSettings {
     // since AutomaticGainControl.isAvailable() is false on this device (see the earlier "Audio
     // effect availability" finding) - enabling it here would be a no-op, not a real choice. Mic
     // direction defaults off since the matrix measured it 0.2dB from baseline with applied:true,
-    // confirming it's inert on this device. Gain moved from 3x to 4x once bandpass+gate's real
-    // peak level (-15.6dBFS) confirmed there's headroom above the original best-measured
-    // combination's -6.3dBFS peak - see "Mic gain 4x/5x + soft limiter" below.
+    // confirming it's inert on this device. Gain moved 3x -> 4x -> 5x as headroom was confirmed
+    // at each step - at 5x with the soft limiter in place, measured -25.8dB mean, -7.7dB peak,
+    // no samples near full scale, so the limiter is only catching occasional transients rather
+    // than compressing continuously (see "Mic gain 4x/5x + soft limiter" below).
     public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_CAMCORDER;
     public static final boolean DEFAULT_NOISE_SUPPRESSION = true;
     public static final boolean DEFAULT_AGC = false;
     public static final boolean DEFAULT_ECHO_CANCELLATION = true;
-    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_4X;
+    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_5X;
     public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
     public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_BANDPASS_GATE;

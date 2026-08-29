@@ -285,6 +285,10 @@ difference (room vs. face), not a bug to chase further right now.
   never reaches 0dBFS - peaks round off smoothly instead of clipping. A hard
   `Short.MIN/MAX_VALUE` bounds check remains as a defensive backstop against rounding landing
   exactly on the int16 boundary, not as the active limiting mechanism.
+- Measured at 5x (now the default) with the limiter in place: -25.8dB mean, -7.7dB peak, no
+  samples near full scale - the limiter is only catching occasional transients, not compressing
+  continuously. Confirms 5x is safely within headroom on this device, same conclusion as the
+  4x step that preceded it.
 - Per-sample cost: below the -3dBFS threshold (the common case for reasonably gain-staged
   audio) it's a comparison and a pass-through - negligible. Above threshold it adds one
   subtraction, one division, one `Math.tanh()` call, one multiply and one add - `tanh()` is a

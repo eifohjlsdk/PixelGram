@@ -383,7 +383,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showMicGainDialog() {
-        String[] names = {"1x (off)", "1.5x", "2x", "3x", "4x (default)", "5x"};
+        String[] names = {"1x (off)", "1.5x", "2x", "3x", "4x", "5x (default)"};
         int[] values = {
                 PixelGramSettings.MIC_GAIN_1X,
                 PixelGramSettings.MIC_GAIN_1_5X,
