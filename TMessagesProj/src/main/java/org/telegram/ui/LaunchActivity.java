@@ -107,6 +107,7 @@ import org.telegram.messenger.BotGuardHelper;
 import org.telegram.messenger.BotWebViewVibrationEffect;
 import org.telegram.messenger.BuildConfig;
 import org.telegram.messenger.BuildVars;
+import org.telegram.messenger.camera.PixelCapsDump;
 import org.telegram.messenger.ChannelBoostsController;
 import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.ContactsController;
@@ -408,6 +409,12 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
         instance = this;
         ApplicationLoader.postInitApplication();
+        // One-off diagnostic hook, debug builds only. Never fires on a normal launch -
+        // requires an explicit intent extra, e.g.:
+        //   adb shell am start -n org.telegram.messenger.beta/org.telegram.ui.LaunchActivity --ez pixelcaps_dump true
+        if (BuildVars.DEBUG_VERSION && getIntent() != null && getIntent().getBooleanExtra("pixelcaps_dump", false)) {
+            PixelCapsDump.run(getApplicationContext());
+        }
         AndroidUtilities.checkDisplaySize(this, getResources().getConfiguration());
         currentAccount = UserConfig.selectedAccount;
         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
