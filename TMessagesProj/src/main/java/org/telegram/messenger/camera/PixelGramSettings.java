@@ -42,6 +42,8 @@ public class PixelGramSettings {
     public static final int MIC_GAIN_1_5X = 1;
     public static final int MIC_GAIN_2X = 2;
     public static final int MIC_GAIN_3X = 3;
+    public static final int MIC_GAIN_4X = 4;
+    public static final int MIC_GAIN_5X = 5;
 
     /** Off: no processing. Bandpass: 90Hz-7kHz filter only. Bandpass + Gate: filter, then a
      * downward-expander gate. See VoiceIsolationProcessor and FINDINGS.md's design writeup for
@@ -96,22 +98,21 @@ public class PixelGramSettings {
     public static final int DEFAULT_AUDIO_BITRATE = 96_000;
     public static final boolean DEFAULT_DEBUG_LOGGING = false;
     // Set from the controlled matrix measurement on the Pixel 11 Pro (see FINDINGS.md's
-    // "Audio matrix measurement" section) - Camcorder + noise suppression + echo cancellation +
-    // 3x gain was the best combination measured: -24.7dB mean (vs -39.1dB baseline), peaks at
-    // -6.3dB, no clipping. AGC defaults off since AutomaticGainControl.isAvailable() is false on
-    // this device (see the earlier "Audio effect availability" finding) - enabling it here would
-    // be a no-op, not a real choice. Mic direction defaults off since the matrix measured it
-    // 0.2dB from baseline with applied:true, confirming it's inert on this device.
+    // "Audio matrix measurement" and "Voice isolation measurement" sections). AGC defaults off
+    // since AutomaticGainControl.isAvailable() is false on this device (see the earlier "Audio
+    // effect availability" finding) - enabling it here would be a no-op, not a real choice. Mic
+    // direction defaults off since the matrix measured it 0.2dB from baseline with applied:true,
+    // confirming it's inert on this device. Gain moved from 3x to 4x once bandpass+gate's real
+    // peak level (-15.6dBFS) confirmed there's headroom above the original best-measured
+    // combination's -6.3dBFS peak - see "Mic gain 4x/5x + soft limiter" below.
     public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_CAMCORDER;
     public static final boolean DEFAULT_NOISE_SUPPRESSION = true;
     public static final boolean DEFAULT_AGC = false;
     public static final boolean DEFAULT_ECHO_CANCELLATION = true;
-    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_3X;
+    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_4X;
     public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
-    // Off by default deliberately - a new, untested-in-the-field processing stage, kept off so
-    // it can be A/B'd against the existing chain rather than silently changing everyone's audio.
-    public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_OFF;
+    public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_BANDPASS_GATE;
     public static final float DEFAULT_GATE_THRESHOLD_DB = -45f;
 
     private static SharedPreferences prefs() {
@@ -253,27 +254,62 @@ public class PixelGramSettings {
                 return 2.0f;
             case MIC_GAIN_3X:
                 return 3.0f;
+            case MIC_GAIN_4X:
+                return 4.0f;
+            case MIC_GAIN_5X:
+                return 5.0f;
             case MIC_GAIN_1X:
             default:
                 return 1.0f;
         }
     }
 
+    // Soft limiter applied after mic gain, replacing the previous hard Short.MIN/MAX_VALUE
+    // clamp (a true brick-wall clip: any sample over range was truncated exactly at the
+    // boundary, a sharp discontinuity in the transfer function that adds harmonic distortion on
+    // loud transients). Below this threshold, signal passes through unchanged; above it, excess
+    // is compressed through tanh() so the output asymptotically approaches but never reaches
+    // +-1.0 (0dBFS) - peaks round off smoothly instead of clipping abruptly. Headroom for this
+    // (and for the higher gain options above) comes from the matrix measurement: the loudest
+    // configuration tested peaked at -6.3dBFS, and bandpass+gate peaks around -15.6dBFS - see
+    // FINDINGS.md.
+    private static final float LIMITER_THRESHOLD_DB = -3f;
+    private static final float LIMITER_THRESHOLD_LINEAR = (float) Math.pow(10.0, LIMITER_THRESHOLD_DB / 20.0);
+    private static final float LIMITER_HEADROOM = 1f - LIMITER_THRESHOLD_LINEAR;
+
+    /** Soft-knee limiter on a normalized [-1,1] sample - see the field comments above for the
+     * curve shape and why it replaced the old hard clamp. */
+    private static float softLimit(float x) {
+        float mag = Math.abs(x);
+        if (mag <= LIMITER_THRESHOLD_LINEAR) {
+            return x;
+        }
+        float sign = Math.signum(x);
+        float excess = mag - LIMITER_THRESHOLD_LINEAR;
+        float compressed = LIMITER_THRESHOLD_LINEAR + LIMITER_HEADROOM * (float) Math.tanh(excess / LIMITER_HEADROOM);
+        return sign * compressed;
+    }
+
     /** Multiplies every 16-bit PCM sample in [0, lengthBytes) of buffer by the mic gain
-     * setting, clamped to Short.MIN_VALUE/MAX_VALUE so peaks clip cleanly instead of wrapping
-     * into distortion. Uses absolute indexed get/put so it doesn't disturb the buffer's
-     * position/limit. No-op (no per-sample cost) when gain is 1x. */
+     * setting, then passes it through the soft limiter above instead of a hard clamp. A final
+     * Short.MIN/MAX_VALUE bounds check stays as a defensive backstop against rounding right at
+     * the asymptote (tanh's output is strictly < 1.0 for any finite input, but rounding a value
+     * close enough to it to an int16 could still land on the boundary) - it's not expected to
+     * actually engage in normal operation the way the old hard clamp did. Uses absolute indexed
+     * get/put so it doesn't disturb the buffer's position/limit. No-op (no per-sample cost)
+     * when gain is 1x. */
     public static void applyMicGain(java.nio.ByteBuffer buffer, int lengthBytes) {
         float gain = getMicGainMultiplier();
         if (gain == 1.0f) return;
         for (int i = 0; i + 1 < lengthBytes; i += 2) {
-            int boosted = Math.round(buffer.getShort(i) * gain);
-            if (boosted > Short.MAX_VALUE) {
-                boosted = Short.MAX_VALUE;
-            } else if (boosted < Short.MIN_VALUE) {
-                boosted = Short.MIN_VALUE;
+            float x = softLimit((buffer.getShort(i) / 32768f) * gain);
+            int outSample = Math.round(x * 32768f);
+            if (outSample > Short.MAX_VALUE) {
+                outSample = Short.MAX_VALUE;
+            } else if (outSample < Short.MIN_VALUE) {
+                outSample = Short.MIN_VALUE;
             }
-            buffer.putShort(i, (short) boosted);
+            buffer.putShort(i, (short) outSample);
         }
     }
 

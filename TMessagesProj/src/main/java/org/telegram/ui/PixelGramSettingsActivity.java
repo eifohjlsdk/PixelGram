@@ -383,14 +383,16 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showMicGainDialog() {
-        String[] names = {"1x (off)", "1.5x", "2x", "3x (default)"};
+        String[] names = {"1x (off)", "1.5x", "2x", "3x", "4x (default)", "5x"};
         int[] values = {
                 PixelGramSettings.MIC_GAIN_1X,
                 PixelGramSettings.MIC_GAIN_1_5X,
                 PixelGramSettings.MIC_GAIN_2X,
-                PixelGramSettings.MIC_GAIN_3X
+                PixelGramSettings.MIC_GAIN_3X,
+                PixelGramSettings.MIC_GAIN_4X,
+                PixelGramSettings.MIC_GAIN_5X
         };
-        boolean[] supported = {true, true, true, true};
+        boolean[] supported = {true, true, true, true, true, true};
         showModeDialog("Microphone Gain", names, values, supported, micGainRow, PixelGramSettings::setMicGainMode);
     }
 
@@ -426,7 +428,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showVoiceIsolationDialog() {
-        String[] names = {"Off (default)", "Bandpass", "Bandpass + Gate"};
+        String[] names = {"Off", "Bandpass", "Bandpass + Gate (default)"};
         int[] values = {
                 PixelGramSettings.VOICE_ISOLATION_OFF,
                 PixelGramSettings.VOICE_ISOLATION_BANDPASS,
@@ -589,6 +591,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
             case PixelGramSettings.MIC_GAIN_1_5X: return "1.5x";
             case PixelGramSettings.MIC_GAIN_2X: return "2x";
             case PixelGramSettings.MIC_GAIN_3X: return "3x";
+            case PixelGramSettings.MIC_GAIN_4X: return "4x";
+            case PixelGramSettings.MIC_GAIN_5X: return "5x";
             default: return "1x (off)";
         }
     }

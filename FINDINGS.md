@@ -271,6 +271,37 @@ difference (room vs. face), not a bug to chase further right now.
   elsewhere in this file for why that specific fixture is a much harder case this isn't
   expected to help with.
 
+## Mic gain 4x/5x + soft limiter (2026-08-29)
+- Added MIC_GAIN_4X and MIC_GAIN_5X. Headroom for going past 3x comes directly from the
+  measurements above: the best combination in the original audio matrix peaked at -6.3dBFS,
+  and the bandpass+gate voice-isolation path peaks around -15.6dBFS - both leave real room
+  before 0dBFS.
+- `PixelGramSettings.applyMicGain()`'s previous clamp was a genuine hard clip: any sample over
+  `Short.MAX_VALUE`/under `Short.MIN_VALUE` was truncated exactly at that boundary, a sharp
+  discontinuity in the transfer function that adds harmonic distortion on loud transients -
+  not a limiter of any kind, just an overflow guard.
+- Replaced it with a soft-knee limiter: below -3dBFS the signal passes through unchanged;
+  above it, the excess is compressed through `tanh()` so output asymptotically approaches but
+  never reaches 0dBFS - peaks round off smoothly instead of clipping. A hard
+  `Short.MIN/MAX_VALUE` bounds check remains as a defensive backstop against rounding landing
+  exactly on the int16 boundary, not as the active limiting mechanism.
+- Per-sample cost: below the -3dBFS threshold (the common case for reasonably gain-staged
+  audio) it's a comparison and a pass-through - negligible. Above threshold it adds one
+  subtraction, one division, one `Math.tanh()` call, one multiply and one add - `tanh()` is a
+  transcendental function, reasoned at roughly tens of nanoseconds per call on a modern ARM
+  core (this is an order-of-magnitude estimate from tanh's known cost profile, not an
+  on-device microbenchmark). Even in the worst case of every single sample exceeding threshold
+  at 48kHz mono, that's under ~2.5ms of CPU per second of audio - well under 1% of one core,
+  and the realistic case (only actual peaks touching the limiter) is far cheaper than that.
+
+## Audio defaults, second revision (2026-08-29)
+- Camcorder source, noise suppression on, echo cancellation on, AGC off (unavailable on this
+  device), mic direction off (confirmed inert), voice isolation Bandpass + Gate, gate threshold
+  -45dBFS, mic gain 4x - moved up from 3x now that the measurements above confirm the headroom
+  to do so. Not a re-measured "best combination" in the same controlled sense as the original
+  matrix - gain and voice isolation defaults here are set from the settled design/headroom
+  reasoning above, expected to be retuned by ear once tested.
+
 ## Microphone direction preference (measured 2026-08-29)
 - `AudioRecord.setPreferredMicrophoneDirection()` returns `true` on the Pixel 11 Pro (both
   towards-user and away-from-user), but has no measurable effect. The active microphone
