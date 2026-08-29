@@ -3,7 +3,10 @@ package org.telegram.messenger.camera;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.hardware.camera2.CameraMetadata;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
 import android.media.MediaRecorder;
+import android.media.MicrophoneDirection;
 
 import org.telegram.messenger.ApplicationLoader;
 
@@ -34,6 +37,15 @@ public class PixelGramSettings {
     public static final int MIC_GAIN_2X = 2;
     public static final int MIC_GAIN_3X = 3;
 
+    public static final int MIC_DIRECTION_OFF = 0;
+    public static final int MIC_DIRECTION_TOWARDS_USER = 1;
+    public static final int MIC_DIRECTION_AWAY_FROM_USER = 2;
+    public static final int MIC_DIRECTION_AUTO = 3;
+
+    /** Discrete field-dimension values offered in the settings picker, 0.0 (wide) to 1.0
+     * (narrow/directional) per setPreferredMicrophoneFieldDimension's documented range. */
+    public static final float[] MIC_FIELD_DIMENSION_VALUES = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+
     private static final String KEY_NOISE_REDUCTION = "noise_reduction_mode";
     private static final String KEY_EDGE_MODE = "edge_mode";
     private static final String KEY_FACE_AE_METERING = "face_ae_metering";
@@ -47,6 +59,8 @@ public class PixelGramSettings {
     private static final String KEY_AGC = "agc_enabled";
     private static final String KEY_ECHO_CANCELLATION = "echo_cancellation_enabled";
     private static final String KEY_MIC_GAIN = "mic_gain_mode";
+    private static final String KEY_MIC_DIRECTION_MODE = "mic_direction_mode";
+    private static final String KEY_MIC_FIELD_DIMENSION = "mic_field_dimension";
 
     public static final int DEFAULT_NOISE_REDUCTION = NOISE_REDUCTION_FAST;
     public static final int DEFAULT_EDGE_MODE = EDGE_MODE_FAST;
@@ -63,6 +77,8 @@ public class PixelGramSettings {
     public static final boolean DEFAULT_AGC = true;
     public static final boolean DEFAULT_ECHO_CANCELLATION = false;
     public static final int DEFAULT_MIC_GAIN = MIC_GAIN_1X;
+    public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_AUTO;
+    public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
 
     private static SharedPreferences prefs() {
         return ApplicationLoader.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -219,6 +235,89 @@ public class PixelGramSettings {
         }
     }
 
+    public static int getMicDirectionMode() {
+        return prefs().getInt(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE);
+    }
+
+    public static void setMicDirectionMode(int mode) {
+        prefs().edit().putInt(KEY_MIC_DIRECTION_MODE, mode).apply();
+    }
+
+    /** Resolves the configured mode to the android.media.MicrophoneDirection constant to
+     * actually request, or null if the setter should not be called at all (Off). Auto follows
+     * the active camera - towards the user for front, away for rear - since that's the
+     * direction the subject is actually in. Explicit Towards user/Away from user selections are
+     * honored as-is regardless of which camera is active; frontCameraActive only matters for
+     * Auto. Voice messages have no camera, so callers there should pass true - Auto then
+     * resolves to towards-user, matching the fact that a voice message is always spoken into
+     * the mic from the front. */
+    public static Integer resolveMicDirection(boolean frontCameraActive) {
+        switch (getMicDirectionMode()) {
+            case MIC_DIRECTION_TOWARDS_USER:
+                return MicrophoneDirection.MIC_DIRECTION_TOWARDS_USER;
+            case MIC_DIRECTION_AWAY_FROM_USER:
+                return MicrophoneDirection.MIC_DIRECTION_AWAY_FROM_USER;
+            case MIC_DIRECTION_AUTO:
+                return frontCameraActive ? MicrophoneDirection.MIC_DIRECTION_TOWARDS_USER : MicrophoneDirection.MIC_DIRECTION_AWAY_FROM_USER;
+            case MIC_DIRECTION_OFF:
+            default:
+                return null;
+        }
+    }
+
+    public static float getMicFieldDimension() {
+        return prefs().getFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION);
+    }
+
+    public static void setMicFieldDimension(float value) {
+        prefs().edit().putFloat(KEY_MIC_FIELD_DIMENSION, value).apply();
+    }
+
+    private static Boolean micDirectionSupportedCache;
+    private static Boolean micFieldDimensionSupportedCache;
+
+    /** setPreferredMicrophoneDirection/FieldDimension have no static isAvailable()-style
+     * capability check the way NoiseSuppressor/AutomaticGainControl/AcousticEchoCanceler do -
+     * success is only observable by actually calling the setter on a real AudioRecord. Probes
+     * both once with a throwaway AudioRecord and caches the result for the process lifetime
+     * (repeating this on every settings-row bind would mean constructing an AudioRecord on
+     * every RecyclerView scroll). Defaults to unsupported (false) rather than throwing if
+     * RECORD_AUDIO isn't granted yet or construction otherwise fails - callers grey the row out
+     * rather than crash. */
+    private static synchronized void ensureMicPreferenceProbe() {
+        if (micDirectionSupportedCache != null && micFieldDimensionSupportedCache != null) {
+            return;
+        }
+        AudioRecord probe = null;
+        try {
+            int sampleRate = 48000;
+            int minBuf = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            if (minBuf <= 0) {
+                minBuf = 3584;
+            }
+            probe = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2);
+            micDirectionSupportedCache = probe.setPreferredMicrophoneDirection(MicrophoneDirection.MIC_DIRECTION_TOWARDS_USER);
+            micFieldDimensionSupportedCache = probe.setPreferredMicrophoneFieldDimension(DEFAULT_MIC_FIELD_DIMENSION);
+        } catch (Exception e) {
+            micDirectionSupportedCache = false;
+            micFieldDimensionSupportedCache = false;
+        } finally {
+            if (probe != null) {
+                probe.release();
+            }
+        }
+    }
+
+    public static boolean isMicDirectionSupported() {
+        ensureMicPreferenceProbe();
+        return micDirectionSupportedCache;
+    }
+
+    public static boolean isMicFieldDimensionSupported() {
+        ensureMicPreferenceProbe();
+        return micFieldDimensionSupportedCache;
+    }
+
     private static final String KEY_LAST_UPDATE_CHECK_MS = "last_update_check_ms";
     private static final String KEY_LAST_SEEN_VERSION = "last_seen_version";
 
@@ -255,6 +354,8 @@ public class PixelGramSettings {
                 .putBoolean(KEY_AGC, DEFAULT_AGC)
                 .putBoolean(KEY_ECHO_CANCELLATION, DEFAULT_ECHO_CANCELLATION)
                 .putInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN)
+                .putInt(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE)
+                .putFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION)
                 .apply();
     }
 }

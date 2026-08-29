@@ -4505,6 +4505,44 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
     }
 
+    /** Applies the configured microphone-direction and field-dimension preferences to the
+     * just-constructed audioRecorder, same setting PixelGramSettings backs for round video.
+     * Voice messages have no camera, so PixelGramSettings.resolveMicDirection is called with
+     * frontCameraActive=true - Auto then resolves to towards-user (the only sensible default
+     * with no camera to follow); an explicit Towards user/Away from user choice is still
+     * honored as configured either way. Gated on the one-time capability probe, same as
+     * InstantCameraView's round-video path. Logs requested vs. applied (the setter's own
+     * return value), then the actual routed microphone via getActiveMicrophones so a change
+     * here is visible as real routing, not just a successful setter call. */
+    private void applyMicPreferences() {
+        if (audioRecorder == null) {
+            return;
+        }
+        try {
+            Integer requestedMicDirection = PixelGramSettings.resolveMicDirection(true);
+            boolean micDirectionApplied = false;
+            if (requestedMicDirection != null && PixelGramSettings.isMicDirectionSupported()) {
+                micDirectionApplied = audioRecorder.setPreferredMicrophoneDirection(requestedMicDirection);
+            }
+            float requestedMicFieldDimension = PixelGramSettings.getMicFieldDimension();
+            boolean micFieldDimensionApplied = false;
+            if (PixelGramSettings.isMicFieldDimensionSupported()) {
+                micFieldDimensionApplied = audioRecorder.setPreferredMicrophoneFieldDimension(requestedMicFieldDimension);
+            }
+            FileLog.d("MediaController: mic direction requested=" + (requestedMicDirection != null ? requestedMicDirection : "off")
+                    + " applied=" + micDirectionApplied
+                    + ", fieldDimension requested=" + requestedMicFieldDimension + " applied=" + micFieldDimensionApplied);
+
+            java.util.List<android.media.MicrophoneInfo> activeMics = audioRecorder.getActiveMicrophones();
+            android.util.Log.d("PixelCaps", "voice message getActiveMicrophones() after applying mic prefs, " + activeMics.size() + " mic(s):");
+            for (android.media.MicrophoneInfo mic : activeMics) {
+                android.util.Log.d("PixelCaps", org.telegram.messenger.camera.PixelCapsDump.describeMicrophone(mic));
+            }
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+    }
+
     private void releaseAudioEffects() {
         try {
             if (audioNoiseSuppressor != null) {
@@ -4755,6 +4793,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 //
                         audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
                         attachAudioEffects();
+                        applyMicPreferences();
                         recordStartTime = System.currentTimeMillis();
                         writtenFrame = 0;
                         samplesCount = 0;
@@ -4833,6 +4872,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 audioRecorderPaused = false;
                 audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
                 attachAudioEffects();
+                applyMicPreferences();
                 recordStartTime = System.currentTimeMillis();
                 recordTimeCount = 0;
                 writtenFrame = 0;

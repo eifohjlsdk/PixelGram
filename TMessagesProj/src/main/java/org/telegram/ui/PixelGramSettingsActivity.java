@@ -84,6 +84,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int agcRow;
     private int echoCancellationRow;
     private int micGainRow;
+    private int micDirectionRow;
+    private int micFieldDimensionRow;
     private int divider3Row;
 
     private int resetRow;
@@ -142,6 +144,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
         agcRow = rowCount++;
         echoCancellationRow = rowCount++;
         micGainRow = rowCount++;
+        micDirectionRow = rowCount++;
+        micFieldDimensionRow = rowCount++;
         divider3Row = rowCount++;
 
         resetRow = rowCount++;
@@ -221,6 +225,16 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 }
             } else if (position == micGainRow) {
                 showMicGainDialog();
+            } else if (position == micDirectionRow) {
+                // Same click-bypass issue as the audio-effect check rows: isEnabled(holder)
+                // only dims the row, it doesn't stop this listener from firing. Re-check here.
+                if (PixelGramSettings.isMicDirectionSupported()) {
+                    showMicDirectionDialog();
+                }
+            } else if (position == micFieldDimensionRow) {
+                if (PixelGramSettings.isMicFieldDimensionSupported()) {
+                    showMicFieldDimensionDialog();
+                }
             } else if (position == resetRow) {
                 showResetDialog();
             } else if (position == checkNowRow) {
@@ -361,6 +375,37 @@ public class PixelGramSettingsActivity extends BaseFragment {
         showModeDialog("Microphone Gain", names, values, supported, micGainRow, PixelGramSettings::setMicGainMode);
     }
 
+    private void showMicDirectionDialog() {
+        String[] names = {"Off", "Towards user", "Away from user", "Auto (follows camera, default)"};
+        int[] values = {
+                PixelGramSettings.MIC_DIRECTION_OFF,
+                PixelGramSettings.MIC_DIRECTION_TOWARDS_USER,
+                PixelGramSettings.MIC_DIRECTION_AWAY_FROM_USER,
+                PixelGramSettings.MIC_DIRECTION_AUTO
+        };
+        boolean[] supported = {true, true, true, true};
+        showModeDialog("Microphone Direction", names, values, supported, micDirectionRow, PixelGramSettings::setMicDirectionMode);
+    }
+
+    /** Field dimension is a float, not one of showModeDialog's int values, so this is a plain
+     * setItems dialog rather than a reuse of that helper - whole-row availability (not
+     * per-option) is already handled by the click listener's isMicFieldDimensionSupported()
+     * guard before this is ever shown. */
+    private void showMicFieldDimensionDialog() {
+        float[] values = PixelGramSettings.MIC_FIELD_DIMENSION_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            options[i] = formatMicFieldDimension(values[i]) + (values[i] == PixelGramSettings.DEFAULT_MIC_FIELD_DIMENSION ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Microphone Field Dimension");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setMicFieldDimension(values[which]);
+            listAdapter.notifyItemChanged(micFieldDimensionRow);
+        });
+        showDialog(builder.create());
+    }
+
     private interface IntSetter {
         void set(int value);
     }
@@ -497,6 +542,20 @@ public class PixelGramSettingsActivity extends BaseFragment {
         }
     }
 
+    private static String formatMicDirection(int mode) {
+        switch (mode) {
+            case PixelGramSettings.MIC_DIRECTION_TOWARDS_USER: return "Towards user";
+            case PixelGramSettings.MIC_DIRECTION_AWAY_FROM_USER: return "Away from user";
+            case PixelGramSettings.MIC_DIRECTION_OFF: return "Off";
+            case PixelGramSettings.MIC_DIRECTION_AUTO:
+            default: return "Auto";
+        }
+    }
+
+    private static String formatMicFieldDimension(float value) {
+        return String.format(Locale.US, "%.2f", value);
+    }
+
     private static String voiceEnhancementName(int mode) {
         switch (mode) {
             case PixelGramSettings.VOICE_ENHANCEMENT_VOICE_COMMUNICATION: return "Voice communication";
@@ -533,6 +592,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == agcRow && AutomaticGainControl.isAvailable())
                     || (pos == echoCancellationRow && AcousticEchoCanceler.isAvailable())
                     || pos == micGainRow
+                    || (pos == micDirectionRow && PixelGramSettings.isMicDirectionSupported())
+                    || (pos == micFieldDimensionRow && PixelGramSettings.isMicFieldDimensionSupported())
                     || pos == resetRow || pos == checkNowRow;
         }
 
@@ -585,6 +646,11 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 case TYPE_SETTINGS: {
                     TextSettingsCell cell = (TextSettingsCell) holder.itemView;
                     cell.setCanDisable(false);
+                    // Reset before the per-row branches below - TYPE_SETTINGS views are recycled
+                    // across all settings rows, so a view last bound to a dimmed capability-gated
+                    // row (micDirectionRow/micFieldDimensionRow) must not stay dimmed when rebound
+                    // to an always-available one.
+                    cell.setAlpha(1f);
                     if (position == apiCredentialsRow) {
                         int apiId = ApiCredentials.getApiId();
                         cell.setTextAndValue("Change Credentials", apiId != 0 ? ("api_id " + apiId) : "not set", false);
@@ -603,7 +669,15 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     } else if (position == voiceEnhancementRow) {
                         cell.setTextAndValue("Voice Enhancement", voiceEnhancementName(PixelGramSettings.getVoiceEnhancementMode()), true);
                     } else if (position == micGainRow) {
-                        cell.setTextAndValue("Microphone Gain", formatMicGain(PixelGramSettings.getMicGainMode()), false);
+                        cell.setTextAndValue("Microphone Gain", formatMicGain(PixelGramSettings.getMicGainMode()), true);
+                    } else if (position == micDirectionRow) {
+                        boolean supported = PixelGramSettings.isMicDirectionSupported();
+                        cell.setTextAndValue("Microphone Direction" + (supported ? "" : " (unavailable)"), formatMicDirection(PixelGramSettings.getMicDirectionMode()), true);
+                        cell.setAlpha(supported ? 1f : DISABLED_ROW_ALPHA);
+                    } else if (position == micFieldDimensionRow) {
+                        boolean supported = PixelGramSettings.isMicFieldDimensionSupported();
+                        cell.setTextAndValue("Microphone Field Dimension" + (supported ? "" : " (unavailable)"), formatMicFieldDimension(PixelGramSettings.getMicFieldDimension()), false);
+                        cell.setAlpha(supported ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == resetRow) {
                         cell.setCanDisable(true);
                         cell.setTextColor(Theme.getColor(Theme.key_text_RedRegular));

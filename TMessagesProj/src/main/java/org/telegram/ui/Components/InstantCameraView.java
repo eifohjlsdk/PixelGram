@@ -3253,7 +3253,45 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 } catch (Exception e) {
                     PixelCameraLog.w("failed to attach audio effects", e);
                 }
+
+                // Mic direction/field dimension: Auto follows the active camera (isFrontface) -
+                // towards the user when the front camera is recording, away when the rear
+                // camera is (the subject is in front of whichever camera is active). Gated on
+                // the one-time capability probe (see PixelGramSettings.isMicDirectionSupported/
+                // isMicFieldDimensionSupported) so we don't bother calling a setter we already
+                // know this device won't honor.
+                Integer requestedMicDirection = PixelGramSettings.resolveMicDirection(isFrontface);
+                boolean micDirectionApplied = false;
+                float requestedMicFieldDimension = PixelGramSettings.getMicFieldDimension();
+                boolean micFieldDimensionApplied = false;
+                try {
+                    if (requestedMicDirection != null && PixelGramSettings.isMicDirectionSupported()) {
+                        micDirectionApplied = audioRecorder.setPreferredMicrophoneDirection(requestedMicDirection);
+                    }
+                    if (PixelGramSettings.isMicFieldDimensionSupported()) {
+                        micFieldDimensionApplied = audioRecorder.setPreferredMicrophoneFieldDimension(requestedMicFieldDimension);
+                    }
+                } catch (Exception e) {
+                    PixelCameraLog.w("failed to apply microphone direction/field dimension preferences", e);
+                }
+                PixelCameraLog.d("mic direction requested=" + (requestedMicDirection != null ? requestedMicDirection : "off (isFrontface=" + isFrontface + ")")
+                        + " applied=" + micDirectionApplied
+                        + ", fieldDimension requested=" + requestedMicFieldDimension + " applied=" + micFieldDimensionApplied);
+
                 audioRecorder.startRecording();
+                // One-off diagnostic (see PixelCapsDump): dump which physical mic(s) are
+                // actually active during a real round-video recording, so a mic-direction/
+                // field-dimension change above is visible as an actual routing change, not just
+                // a setter's return value. Read-only query, no effect on the recording itself.
+                try {
+                    java.util.List<android.media.MicrophoneInfo> activeMics = audioRecorder.getActiveMicrophones();
+                    android.util.Log.d("PixelCaps", "round-video getActiveMicrophones() after applying mic prefs, " + activeMics.size() + " mic(s):");
+                    for (android.media.MicrophoneInfo mic : activeMics) {
+                        android.util.Log.d("PixelCaps", org.telegram.messenger.camera.PixelCapsDump.describeMicrophone(mic));
+                    }
+                } catch (Exception e) {
+                    android.util.Log.w("PixelCaps", "round-video getActiveMicrophones() failed", e);
+                }
                 if (BuildVars.LOGS_ENABLED) {
                     FileLog.d("InstantCamera initied audio record with channels " + audioRecorder.getChannelCount() + " sample rate = " + audioRecorder.getSampleRate() + " bufferSize = " + bufferSize);
                 }
@@ -3321,7 +3359,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " noiseSuppression:" + noiseSuppressionActuallyEnabled
                             + " agc:" + agcActuallyEnabled
                             + " echoCancellation:" + echoCancellationActuallyEnabled
-                            + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x");
+                            + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x"
+                            + " micDirection:" + (requestedMicDirection != null ? requestedMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
+                            + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")");
                 }
 
                 AndroidUtilities.runOnUIThread(() -> {
