@@ -478,9 +478,14 @@ With the dimension bug fixed, 960px *still* renders as a square on send - but th
 upload time rather than in any client's own rendering, meaning the server itself is declining to
 treat it as a round message and reclassifying it as a normal video. This is a distinct, genuine
 constraint (unlike the 512px "nobody's tested higher" caution retracted above, which rested
-entirely on the now-fixed declared-dimension bug and had no other basis). Where the actual ceiling
-sits between 640px (known good) and 960px (known rejected) is being bracketed empirically - see the
-downscale filter/dither/resolution options above for the current picker range.
+entirely on the now-fixed declared-dimension bug and had no other basis).
+
+**Bracketed and closed.** 720, 704, 672, and 656 all fail the same way (square fallback on send);
+640 is confirmed good on Android, iOS, and web. The ceiling is therefore somewhere in 640-655
+inclusive, with 640 itself the most likely value given it's also the largest clean-integer
+downscale ratio (3:1) from the 1920px supersample capture. 640 is set as both the maximum offered
+in the resolution picker and the default - no further bracketing planned unless a reason to test
+641-655 individually comes up.
 
 ## Image quality defaults revised for the supersample-capture pipeline (2026-08-30)
 
@@ -494,9 +499,9 @@ between 640 (good) and 960 (rejected server-side), expect this default to move u
 ceiling is found (see "960px: a separate, real server-side ceiling" above).
 
 **Superseded same day**: default moved to 640px once it was confirmed working on Android, iOS, and
-web (see "960px: a separate, real server-side ceiling" above) - a clean 3:1 downscale from the
-1920px capture. 720px is confirmed rejected server-side; the actual ceiling is being bracketed
-between 641 and 719 with 672/704 candidates. Expect this default to move up again once found.
+web - a clean 3:1 downscale from the 1920px capture. Also the final value: the server-side ceiling
+bracketing (see "960px: a separate, real server-side ceiling" above) closed with 640 as both the
+practical maximum and the default, so this won't move up further.
 
 **Noise reduction and edge mode: off (previously Fast/Fast).** Both were tuned back when the ISP
 did the *entire* resolution reduction with no oversampling margin at all - real-time capture-stage
