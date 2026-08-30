@@ -520,6 +520,31 @@ backlit-subject use case investigated earlier in this session, independent of th
 downscale pipeline work; reset to neutral defaults alongside the capture-processing changes above
 rather than carried forward untested against the new pipeline.
 
+## INFO_SUPPORTED_HARDWARE_LEVEL definitively FULL on both cameras (2026-08-30)
+
+Earlier reports of `INFO_SUPPORTED_HARDWARE_LEVEL` disagreed (one dump said LIMITED for both
+cameras, a later one said FULL for the front). Re-ran `PixelCapsDump` live against the current
+device rather than relying on a stale saved dump: **both cameras report FULL** -
+`android.info.supportedHardwareLevel = 1` for camera0 (rear, `lens.facing=1`/BACK) and camera1
+(front, `lens.facing=0`/FRONT) alike. `android.request.availableCapabilities` confirms
+`MANUAL_SENSOR` (1) and `MANUAL_POST_PROCESSING` (2) present on both (rear additionally has
+`CONSTRAINED_HIGH_SPEED_VIDEO`/9, which front lacks).
+
+**This means the LIMITED assumption behind writing off shutter-speed capping and manual exposure
+was wrong**, on this device at least. FULL guarantees (and `MANUAL_SENSOR`'s presence confirms)
+real per-frame manual control that's not available under LIMITED:
+- `SENSOR_EXPOSURE_TIME` and `SENSOR_SENSITIVITY` (ISO) set directly, independent of the AE
+  algorithm - the actual mechanism for a genuine minimum-shutter-speed cap (force AE to never drop
+  exposure time below some floor even in low light, trading noise for less motion blur), not
+  achievable through `CONTROL_AE_EXPOSURE_COMPENSATION` alone. Rear: exposure time
+  40,852ns-16,000,000,684ns (up to 16s), sensitivity 24-6023. Front: 68,360ns-1,000,000,628ns (up
+  to 1s), sensitivity 55-19692.
+- `SENSOR_FRAME_DURATION` manual control, and `MANUAL_POST_PROCESSING` (manual tonemap curve,
+  color correction transform/gains) - the tonemap-curve investigation earlier in this session
+  correctly assumed this capability existed and was right to reject it on ISP-adaptive-behavior
+  grounds, not availability grounds.
+- Not yet implemented; noted here as newly-confirmed-available, not yet acted on.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
