@@ -150,10 +150,9 @@ public class PixelGramSettings {
     // Set from A/B testing across the full resolution range (see FINDINGS.md): resolution
     // mattered more than bitrate, and Lanczos looked clearly better than Box/Gaussian. 640 is
     // confirmed working (round, not reclassified as a normal video) on Android, iOS, and web, and
-    // is a clean 3:1 downscale from the 1920 supersample capture. There's a real server-side
-    // ceiling somewhere above 640 (720 is confirmed rejected) - being bracketed empirically; this
-    // default should move up once that's found, since testing shows resolution is worth pushing
-    // further than bitrate.
+    // is a clean 3:1 downscale from the 1920 supersample capture. The server-side ceiling
+    // bracketing concluded: 656 and everything above it (672/704/720/960) is rejected, so 640 is
+    // both the practical maximum and the default - not expected to move up further.
     public static final int DEFAULT_RESOLUTION = 640;
     public static final int DEFAULT_VIDEO_BITRATE = 1_000_000;
     public static final int DEFAULT_AUDIO_BITRATE = 96_000;
