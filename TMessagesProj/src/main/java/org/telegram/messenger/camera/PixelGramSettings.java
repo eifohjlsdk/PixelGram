@@ -100,13 +100,21 @@ public class PixelGramSettings {
     private static final String KEY_DOWNSCALE_FILTER = "downscale_filter_mode";
     private static final String KEY_DITHER_AMOUNT_LSB = "dither_amount_lsb";
 
-    public static final int DEFAULT_NOISE_REDUCTION = NOISE_REDUCTION_FAST;
-    public static final int DEFAULT_EDGE_MODE = EDGE_MODE_FAST;
-    // Matches what this device already used before this setting existed (confirmed by reading
-    // back the actual applied CaptureResult.TONEMAP_MODE - see FINDINGS.md).
+    // NR/edge/exposure-comp/face-AE-metering defaults below were tuned back when the ISP did the
+    // entire resolution reduction with no oversampling margin at all (see FINDINGS.md's original
+    // tone-mapping/AE-regions investigations) - capture-stage noise reduction and edge enhancement
+    // were doing real work then. Now that the round-video path captures at 1920 and Lanczos-
+    // downscales to the render target, that single downscale pass both denoises (averaging many
+    // source pixels per output pixel) and sharpens (Lanczos's own negative lobes) far more
+    // effectively than the ISP's own real-time NR/edge processing at capture resolution, making
+    // that capture-stage processing redundant - off is now the better default.
+    public static final int DEFAULT_NOISE_REDUCTION = NOISE_REDUCTION_OFF;
+    public static final int DEFAULT_EDGE_MODE = EDGE_MODE_OFF;
+    // Fast vs High Quality showed no visible difference across two separate tests - kept as Fast
+    // since it's the cheaper of two options that look the same.
     public static final int DEFAULT_TONEMAP_MODE = TONEMAP_MODE_FAST;
-    public static final boolean DEFAULT_FACE_AE_METERING = true;
-    public static final float DEFAULT_EXPOSURE_COMPENSATION = 0.3f;
+    public static final boolean DEFAULT_FACE_AE_METERING = false;
+    public static final float DEFAULT_EXPOSURE_COMPENSATION = 0.0f;
     // Set from A/B testing across the full resolution range (see FINDINGS.md): resolution
     // mattered more than bitrate, Lanczos looked clearly better than Box/Gaussian, and 512px is
     // the practical safe ceiling for cross-client playback (confirmed breakage above that on both

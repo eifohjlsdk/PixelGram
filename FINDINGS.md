@@ -530,6 +530,37 @@ cutoff) hasn't been established, and they aren't against protocol spec - but rec
 Android, Telegram Web, or iOS should be expected to see a broken or non-round rendering above
 ~512px until the actual mechanism is found.
 
+## Image quality defaults revised for the supersample-capture pipeline (2026-08-30)
+
+Defaults changed: resolution to 480px, noise reduction off, edge mode off, face-weighted AE
+metering off, exposure compensation 0.0, tone mapping stays Fast, downscale filter stays Lanczos.
+
+**Resolution: 480px.** Clean 4:1 downscale from the 1920px supersample capture, and stays
+comfortably clear of the 512px practical ceiling for cross-client playback established above
+(confirmed breakage above that on both Android and iOS).
+
+**Noise reduction and edge mode: off (previously Fast/Fast).** Both were tuned back when the ISP
+did the *entire* resolution reduction with no oversampling margin at all - real-time capture-stage
+NR and edge enhancement were doing genuine, necessary work at that point, since the sensor's own
+scaler was the only thing standing between raw sensor noise/softness and the final small frame.
+Now that round video captures at 1920 and Lanczos-downscales to the render target, that single
+downscale pass does both jobs far more effectively than the ISP's real-time processing ever could:
+averaging many source pixels into each output pixel is inherently a denoise, and Lanczos's own
+negative lobes sharpen edges as an inherent property of the kernel - not a coincidence, but the
+actual mechanism A/B testing already confirmed made Lanczos look better than Box/Gaussian despite
+the ringing risk (see the downscale filter finding above). Capture-stage NR/edge processing is
+consequently redundant now, and off is the better default - it also means the ISP applies zero
+processing before the data ever reaches the downscale, matching the "highest possible detail into
+the resampler" logic supersampling was chosen for in the first place.
+
+**Tone mapping: Fast vs. High Quality showed no visible difference across two separate tests.**
+Kept Fast, the cheaper of the two.
+
+**Face-weighted AE metering and exposure compensation: off / 0.0.** These were tuned for the
+backlit-subject use case investigated earlier in this session, independent of the resolution/
+downscale pipeline work; reset to neutral defaults alongside the capture-processing changes above
+rather than carried forward untested against the new pipeline.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

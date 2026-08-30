@@ -361,14 +361,14 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showNoiseReductionDialog() {
-        String[] names = {"Off", "Fast (default)", "High Quality"};
+        String[] names = {"Off (default)", "Fast", "High Quality"};
         int[] values = {PixelGramSettings.NOISE_REDUCTION_OFF, PixelGramSettings.NOISE_REDUCTION_FAST, PixelGramSettings.NOISE_REDUCTION_HIGH_QUALITY};
         boolean[] supported = supportedIntersection(values, Camera2Session.queryAvailableNoiseReductionModes(true), Camera2Session.queryAvailableNoiseReductionModes(false));
         showModeDialog("Noise Reduction", names, values, supported, noiseReductionRow, PixelGramSettings::setNoiseReductionMode);
     }
 
     private void showEdgeModeDialog() {
-        String[] names = {"Off", "Fast (default)", "High Quality"};
+        String[] names = {"Off (default)", "Fast", "High Quality"};
         int[] values = {PixelGramSettings.EDGE_MODE_OFF, PixelGramSettings.EDGE_MODE_FAST, PixelGramSettings.EDGE_MODE_HIGH_QUALITY};
         boolean[] supported = supportedIntersection(values, Camera2Session.queryAvailableEdgeModes(true), Camera2Session.queryAvailableEdgeModes(false));
         showModeDialog("Edge Mode", names, values, supported, edgeModeRow, PixelGramSettings::setEdgeMode);
