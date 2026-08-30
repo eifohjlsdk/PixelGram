@@ -229,6 +229,144 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     "   gl_FragColor = texture2D(sTexture, vTextureCoord);\n" +
                     "}\n";
 
+    // Two-pass separable supersample downscale for the round-video encoder path (see
+    // drawSupersampledFrame/setupSupersamplePipeline below). Pass 1 downscales horizontally only,
+    // straight off the external OES camera texture; pass 2 downscales vertically off the plain 2D
+    // intermediate texture pass 1 wrote, and dithers. Both reuse the same 9-tap 1D Lanczos-2
+    // windowed-sinc weights already shipped (unused) in res/raw/instant_lanczos_frag_oes.glsl -
+    // that asset's own code path never runs because the overlayHelper it's gated behind is always
+    // non-null by the time it's checked (see FINDINGS.md). Tap spacing is one destination-pixel
+    // width in UV space (uniform texelSize, set to 1/videoWidth or 1/videoHeight from Java), not a
+    // fixed source-texel step, so the kernel's support automatically scales with whatever the
+    // actual capture/target resolution ratio turns out to be.
+    private static final String SUPERSAMPLE_H_VERTEX_SHADER =
+            "uniform mat4 uMVPMatrix;\n" +
+                    "uniform mat4 uSTMatrix;\n" +
+                    "attribute vec4 aPosition;\n" +
+                    "attribute vec4 aTextureCoord;\n" +
+                    "uniform vec2 texelSize;\n" +
+                    "varying vec2 vC;\n" +
+                    "varying vec2 vL1, vL2, vL3, vL4;\n" +
+                    "varying vec2 vR1, vR2, vR3, vR4;\n" +
+                    "void main() {\n" +
+                    "   gl_Position = uMVPMatrix * aPosition;\n" +
+                    "   vC = (uSTMatrix * aTextureCoord).xy;\n" +
+                    "   vL1 = vC - texelSize;       vR1 = vC + texelSize;\n" +
+                    "   vL2 = vC - 2.0 * texelSize; vR2 = vC + 2.0 * texelSize;\n" +
+                    "   vL3 = vC - 3.0 * texelSize; vR3 = vC + 3.0 * texelSize;\n" +
+                    "   vL4 = vC - 4.0 * texelSize; vR4 = vC + 4.0 * texelSize;\n" +
+                    "}\n";
+
+    // Weights are (center, +-1, +-2, +-3, +-4) for the shared 9-tap layout the vertex shaders
+    // above set up. Lanczos-2 is the original windowed-sinc weights reused from
+    // res/raw/instant_lanczos_frag_oes.glsl (see the comment above). Box is a flat 9-tap average
+    // (1/9 each) - no negative lobes, so no ringing, at the cost of being softer. Gaussian
+    // (sigma=1.6, i.e. the 9-tap/radius-4 window covers about 2.5 sigma) sits between the two:
+    // still strictly positive/ringing-free, but with more weight concentrated near the center
+    // than the box filter's flat distribution. See PixelGramSettings.DOWNSCALE_FILTER_* for why
+    // this is user-selectable: Lanczos's negative lobes sharpen edges, but on fine high-contrast
+    // detail (beard stubble, hair) that sharpening is ringing - high-frequency content the video
+    // encoder has to spend bits on, which at typical round-video bitrates it often can't afford,
+    // degrading into blocking instead. Box/Gaussian trade pre-encode sharpness for a more
+    // compressible signal, which can look better post-encode despite looking softer raw.
+    private static final float[] DOWNSCALE_WEIGHTS_LANCZOS = {0.38026f, 0.27667f, 0.08074f, -0.02612f, -0.02143f};
+    private static final float[] DOWNSCALE_WEIGHTS_BOX = {1f / 9f, 1f / 9f, 1f / 9f, 1f / 9f, 1f / 9f};
+    private static final float[] DOWNSCALE_WEIGHTS_GAUSSIAN = {0.2504f, 0.2060f, 0.1146f, 0.0432f, 0.0110f};
+
+    private static float[] downscaleWeightsFor(int filter) {
+        switch (filter) {
+            case PixelGramSettings.DOWNSCALE_FILTER_BOX: return DOWNSCALE_WEIGHTS_BOX;
+            case PixelGramSettings.DOWNSCALE_FILTER_GAUSSIAN: return DOWNSCALE_WEIGHTS_GAUSSIAN;
+            default: return DOWNSCALE_WEIGHTS_LANCZOS;
+        }
+    }
+
+    private static String tapSumGlsl(float[] w) {
+        return "vec4 c = texture2D(sTexture, vC) * " + w[0] + ";\n" +
+                "c += (texture2D(sTexture, vL1) + texture2D(sTexture, vR1)) * " + w[1] + ";\n" +
+                "c += (texture2D(sTexture, vL2) + texture2D(sTexture, vR2)) * " + w[2] + ";\n" +
+                "c += (texture2D(sTexture, vL3) + texture2D(sTexture, vR3)) * " + w[3] + ";\n" +
+                "c += (texture2D(sTexture, vL4) + texture2D(sTexture, vR4)) * " + w[4] + ";\n";
+    }
+
+    private static String buildSupersampleHFragmentShader(float[] weights) {
+        return "#extension GL_OES_EGL_image_external : require\n" +
+                "precision mediump float;\n" +
+                "uniform samplerExternalOES sTexture;\n" +
+                "varying vec2 vC;\n" +
+                "varying vec2 vL1, vL2, vL3, vL4;\n" +
+                "varying vec2 vR1, vR2, vR3, vR4;\n" +
+                "void main() {\n" +
+                tapSumGlsl(weights) +
+                "   gl_FragColor = c;\n" +
+                "}\n";
+    }
+
+    private static final String SUPERSAMPLE_V_VERTEX_SHADER =
+            "uniform mat4 uMVPMatrix;\n" +
+                    "attribute vec4 aPosition;\n" +
+                    "uniform vec2 texelSize;\n" +
+                    "varying vec2 vC;\n" +
+                    "varying vec2 vL1, vL2, vL3, vL4;\n" +
+                    "varying vec2 vR1, vR2, vR3, vR4;\n" +
+                    "void main() {\n" +
+                    "   gl_Position = uMVPMatrix * aPosition;\n" +
+                    // Derive the sampling coordinate from this pass's own (post-matrix) clip
+                    // position, not aTextureCoord - pass 1 wrote the intermediate texture using
+                    // clip position alone (texcoord only picked which OES source texel it sampled,
+                    // it never influenced *where* the write landed), so aTextureCoord's
+                    // camera-facing V-flip/crop convention has no relationship to this texture's
+                    // layout. Reusing it here was the bug: it silently reread the intermediate
+                    // texture through the wrong convention and showed up as the frame being
+                    // shifted inside the circle. Matching pass 1's own write mapping exactly is
+                    // correct regardless of what uMVPMatrix does (identity, flip, rotation, ...),
+                    // since both passes are given the same uMVPMatrix value.
+                    "   vC = (gl_Position.xy / gl_Position.w) * 0.5 + 0.5;\n" +
+                    "   vL1 = vC - texelSize;       vR1 = vC + texelSize;\n" +
+                    "   vL2 = vC - 2.0 * texelSize; vR2 = vC + 2.0 * texelSize;\n" +
+                    "   vL3 = vC - 3.0 * texelSize; vR3 = vC + 3.0 * texelSize;\n" +
+                    "   vL4 = vC - 4.0 * texelSize; vR4 = vC + 4.0 * texelSize;\n" +
+                    "}\n";
+
+    // Vertical resolve + ordered (Bayer 4x4) dithering. This is the actual 8-bit RGBA
+    // quantization point for the frame (it writes into overlayHelper's destination texture,
+    // upstream of its blur-vignette/watermark compositing), so it's the right place to break up
+    // banding rather than after compositing has already happened. bayer2/bayer4 are the standard
+    // closed-form recursive construction (no array indexing, portable to GLSL ES 1.00).
+    //
+    // gl_FragCoord.xy is wrapped to the 4x4 tile size with mod() BEFORE it ever reaches bayer2's
+    // squaring term - this was the actual cause of the "top of frame renders black" bug: bayer2
+    // squared the raw, unwrapped fragment coordinate (up to ~380 for a round-video frame), and
+    // 380*380 overflows a mediump/FP16 float's ~65504 max representable value once the coordinate
+    // passes ~256. fract() of an overflowed (infinite/NaN) value is garbage, which corrupted the
+    // dither offset and clamped a whole band of high-coordinate rows to black. A Bayer pattern is
+    // inherently periodic, so wrapping to the tile size first is both the correct way to
+    // implement it and immune to this regardless of precision or frame size.
+    private static String buildSupersampleVFragmentShader(float[] weights) {
+        return "precision mediump float;\n" +
+                "uniform sampler2D sTexture;\n" +
+                "uniform float alpha;\n" +
+                "uniform float ditherAmplitude;\n" +
+                "varying vec2 vC;\n" +
+                "varying vec2 vL1, vL2, vL3, vL4;\n" +
+                "varying vec2 vR1, vR2, vR3, vR4;\n" +
+                "float bayer2(vec2 a) {\n" +
+                "   a = floor(a);\n" +
+                "   return fract(a.x / 2.0 + a.y * a.y * 0.75);\n" +
+                "}\n" +
+                "float bayer4(vec2 a) {\n" +
+                "   return bayer2(0.5 * a) * 0.25 + bayer2(a);\n" +
+                "}\n" +
+                "void main() {\n" +
+                tapSumGlsl(weights) +
+                // ditherAmplitude is 0 when the setting is "Off" - the multiply already makes
+                // this a no-op in that case, no separate branch needed.
+                "   vec2 tileCoord = mod(gl_FragCoord.xy, 4.0);\n" +
+                "   float d = (bayer4(tileCoord) - 0.5) * ditherAmplitude;\n" +
+                "   gl_FragColor = vec4((c.rgb + vec3(d)) * alpha, alpha);\n" +
+                "}\n";
+    }
+
     private FloatBuffer vertexBuffer;
     private FloatBuffer textureBuffer;
     private FloatBuffer oldTextureTextureBuffer;
@@ -1345,6 +1483,16 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         return false;
     }
 
+    // Mirrors the gating already used inside createFragmentShaderV2's "real downscale needed"
+    // branch - duplicated rather than refactored so that shader's own (unchanged) fallback
+    // behaviour can't be affected by this addition. Despite allowBigSizeCamera()'s own
+    // "Camera1 only" tag, createFragmentShaderV2 already keys off it regardless of camera API, so
+    // this reuses the same (Camera2-applicable in practice) signal for consistency.
+    private boolean shouldSupersampleDownscale(Size previewSize) {
+        return !SharedConfig.deviceIsLow() && allowBigSizeCamera()
+                && !(previewSize != null && Math.max(previewSize.getHeight(), previewSize.getWidth()) * 0.7f < PixelGramSettings.getResolution());
+    }
+
     private void createCamera(final int index, final SurfaceTexture surfaceTexture) {
         AndroidUtilities.runOnUIThread(() -> {
             if (cameraThread == null) {
@@ -2209,6 +2357,17 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         private int previewSizeHandle;
         private int texelSizeHandle;
         private int alphaHandle;
+
+        // Two-pass separable supersample downscale + dither (see setupSupersamplePipeline,
+        // destroySupersamplePipeline, drawSupersampledFrame). supersampleHProgram/VProgram are 0
+        // when the pipeline isn't set up (low-end device, near-1:1 preview, or a link failure) -
+        // that's the sentinel the draw loop checks to fall back to the old single-tap resample.
+        private int supersampleHProgram, supersampleHPositionHandle, supersampleHTextureHandle, supersampleHVertexMatrixHandle, supersampleHTextureMatrixHandle, supersampleHTexelSizeHandle;
+        private int supersampleVProgram, supersampleVPositionHandle, supersampleVVertexMatrixHandle, supersampleVTexelSizeHandle, supersampleVAlphaHandle, supersampleVDitherAmpHandle;
+        private int[] supersampleFrameBuffer;
+        private int[] supersampleTexture;
+        private int supersampleTexWidth, supersampleTexHeight;
+
         private int zeroTimeStamps;
         private Integer lastCameraId = 0;
         private InstantCameraVideoEncoderOverlayHelper overlayHelper;
@@ -2704,17 +2863,20 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
             }
 
-            if (previewSize != null) {
-                GLES20.glUniform2f(previewSizeHandle, previewSize[surfaceIndex].getWidth(), previewSize[surfaceIndex].getHeight());
-                GLES20.glUniform2f(texelSizeHandle, (float) 1f / previewSize[surfaceIndex].getWidth() / 2f, (float) 1f / previewSize[surfaceIndex].getHeight() / 2f);
-            }
-
             final int tex = cameraTexture[surfaceIndex];
-            if (tex != Integer.MIN_VALUE) {
-                GLES20.glUniformMatrix4fv(textureMatrixHandle, 1, false, mSTMatrix, 0);
-                GLES20.glUniform1f(alphaHandle, cameraTextureAlpha);
-                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex);
-                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            if (previewSize != null && tex != Integer.MIN_VALUE && supersampleHProgram != 0 && supersampleVProgram != 0) {
+                drawSupersampledFrame(tex);
+            } else {
+                if (previewSize != null) {
+                    GLES20.glUniform2f(previewSizeHandle, previewSize[surfaceIndex].getWidth(), previewSize[surfaceIndex].getHeight());
+                    GLES20.glUniform2f(texelSizeHandle, (float) 1f / previewSize[surfaceIndex].getWidth() / 2f, (float) 1f / previewSize[surfaceIndex].getHeight() / 2f);
+                }
+                if (tex != Integer.MIN_VALUE) {
+                    GLES20.glUniformMatrix4fv(textureMatrixHandle, 1, false, mSTMatrix, 0);
+                    GLES20.glUniform1f(alphaHandle, cameraTextureAlpha);
+                    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex);
+                    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+                }
             }
 
             GLES20.glDisableVertexAttribArray(positionHandle);
@@ -2751,6 +2913,159 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             } else if (!cameraReady) {
                 cameraReady = true;
                 AndroidUtilities.runOnUIThread(() -> textureOverlayView.animate().setDuration(120).alpha(0.0f).setInterpolator(new DecelerateInterpolator()).start());
+            }
+        }
+
+        // Two-pass separable supersample downscale + ordered dither, replacing the single 2x2-tap
+        // bilinear resample for the "quality" path (see setupSupersamplePipeline for the gating
+        // and shouldSupersampleDownscale for the condition). Pass 1 downscales horizontally only,
+        // external OES camera texture -> intermediate 2D texture at videoWidth x source-height.
+        // Pass 2 downscales vertically and dithers, writing into overlayHelper's already-bound
+        // destination texture (re-bound here since pass 1 pointed the framebuffer at our own
+        // intermediate texture in between).
+        private void drawSupersampledFrame(int tex) {
+            final int neededHeight = previewSize[surfaceIndex].getHeight();
+            if (neededHeight != supersampleTexHeight) {
+                // Handles a mid-recording camera switch landing on a source with a different
+                // capture height than the camera we started with (front/rear can offer different
+                // near-square candidates on other hardware, even though they match on this
+                // device) - resize the intermediate texture's backing store in place.
+                supersampleTexHeight = neededHeight;
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, supersampleTexture[0]);
+                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, supersampleTexWidth, supersampleTexHeight, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null);
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
+            }
+
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, supersampleFrameBuffer[0]);
+            GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, supersampleTexture[0], 0);
+            GLES20.glViewport(0, 0, supersampleTexWidth, supersampleTexHeight);
+
+            GLES20.glUseProgram(supersampleHProgram);
+            GLES20.glVertexAttribPointer(supersampleHPositionHandle, 3, GLES20.GL_FLOAT, false, 12, InstantCameraView.this.vertexBuffer);
+            GLES20.glEnableVertexAttribArray(supersampleHPositionHandle);
+            GLES20.glVertexAttribPointer(supersampleHTextureHandle, 2, GLES20.GL_FLOAT, false, 8, InstantCameraView.this.textureBuffer);
+            GLES20.glEnableVertexAttribArray(supersampleHTextureHandle);
+            GLES20.glUniformMatrix4fv(supersampleHVertexMatrixHandle, 1, false, mMVPMatrix, 0);
+            GLES20.glUniformMatrix4fv(supersampleHTextureMatrixHandle, 1, false, mSTMatrix, 0);
+            GLES20.glUniform2f(supersampleHTexelSizeHandle, 1f / videoWidth, 0f);
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex);
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            GLES20.glDisableVertexAttribArray(supersampleHPositionHandle);
+            GLES20.glDisableVertexAttribArray(supersampleHTextureHandle);
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0);
+
+            if (overlayHelper != null) {
+                overlayHelper.bind();
+            }
+            GLES20.glUseProgram(supersampleVProgram);
+            GLES20.glVertexAttribPointer(supersampleVPositionHandle, 3, GLES20.GL_FLOAT, false, 12, InstantCameraView.this.vertexBuffer);
+            GLES20.glEnableVertexAttribArray(supersampleVPositionHandle);
+            GLES20.glUniformMatrix4fv(supersampleVVertexMatrixHandle, 1, false, mMVPMatrix, 0);
+            GLES20.glUniform2f(supersampleVTexelSizeHandle, 0f, 1f / videoHeight);
+            GLES20.glUniform1f(supersampleVAlphaHandle, cameraTextureAlpha);
+            GLES20.glUniform1f(supersampleVDitherAmpHandle, PixelGramSettings.getDitherAmountLsb() / 255f);
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, supersampleTexture[0]);
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            GLES20.glDisableVertexAttribArray(supersampleVPositionHandle);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
+            GLES20.glUseProgram(0);
+        }
+
+        // Allocates the intermediate FBO/texture and links the two supersample programs, or
+        // leaves supersampleHProgram/VProgram at 0 (their "not active" sentinel) when
+        // shouldSupersampleDownscale() says this device/preview combination doesn't call for it -
+        // the draw loop then falls back to the original single-tap resample unchanged.
+        private void setupSupersamplePipeline(Size sourcePreviewSize) {
+            destroySupersamplePipeline();
+            if (!shouldSupersampleDownscale(sourcePreviewSize)) {
+                return;
+            }
+
+            supersampleTexWidth = videoWidth;
+            supersampleTexHeight = sourcePreviewSize.getHeight();
+
+            int[] fb = new int[1];
+            int[] tex = new int[1];
+            GLES20.glGenFramebuffers(1, fb, 0);
+            GLES20.glGenTextures(1, tex, 0);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0]);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, supersampleTexWidth, supersampleTexHeight, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
+            supersampleFrameBuffer = fb;
+            supersampleTexture = tex;
+
+            float[] downscaleWeights = downscaleWeightsFor(PixelGramSettings.getDownscaleFilter());
+            int vs1 = loadShader(GLES20.GL_VERTEX_SHADER, SUPERSAMPLE_H_VERTEX_SHADER);
+            int fs1 = loadShader(GLES20.GL_FRAGMENT_SHADER, buildSupersampleHFragmentShader(downscaleWeights));
+            if (vs1 != 0 && fs1 != 0) {
+                int program = GLES20.glCreateProgram();
+                GLES20.glAttachShader(program, vs1);
+                GLES20.glAttachShader(program, fs1);
+                GLES20.glLinkProgram(program);
+                int[] linkStatus = new int[1];
+                GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linkStatus, 0);
+                if (linkStatus[0] != 0) {
+                    supersampleHProgram = program;
+                    supersampleHPositionHandle = GLES20.glGetAttribLocation(program, "aPosition");
+                    supersampleHTextureHandle = GLES20.glGetAttribLocation(program, "aTextureCoord");
+                    supersampleHVertexMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix");
+                    supersampleHTextureMatrixHandle = GLES20.glGetUniformLocation(program, "uSTMatrix");
+                    supersampleHTexelSizeHandle = GLES20.glGetUniformLocation(program, "texelSize");
+                } else {
+                    GLES20.glDeleteProgram(program);
+                }
+            }
+
+            int vs2 = loadShader(GLES20.GL_VERTEX_SHADER, SUPERSAMPLE_V_VERTEX_SHADER);
+            int fs2 = loadShader(GLES20.GL_FRAGMENT_SHADER, buildSupersampleVFragmentShader(downscaleWeights));
+            if (vs2 != 0 && fs2 != 0) {
+                int program = GLES20.glCreateProgram();
+                GLES20.glAttachShader(program, vs2);
+                GLES20.glAttachShader(program, fs2);
+                GLES20.glLinkProgram(program);
+                int[] linkStatus = new int[1];
+                GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linkStatus, 0);
+                if (linkStatus[0] != 0) {
+                    supersampleVProgram = program;
+                    supersampleVPositionHandle = GLES20.glGetAttribLocation(program, "aPosition");
+                    supersampleVVertexMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix");
+                    supersampleVTexelSizeHandle = GLES20.glGetUniformLocation(program, "texelSize");
+                    supersampleVAlphaHandle = GLES20.glGetUniformLocation(program, "alpha");
+                    supersampleVDitherAmpHandle = GLES20.glGetUniformLocation(program, "ditherAmplitude");
+                } else {
+                    GLES20.glDeleteProgram(program);
+                }
+            }
+
+            // Either program failing to link disables the whole pipeline rather than running
+            // half of it - fall back cleanly to the single-tap resample instead.
+            if (supersampleHProgram == 0 || supersampleVProgram == 0) {
+                destroySupersamplePipeline();
+            }
+        }
+
+        private void destroySupersamplePipeline() {
+            if (supersampleHProgram != 0) {
+                GLES20.glDeleteProgram(supersampleHProgram);
+                supersampleHProgram = 0;
+            }
+            if (supersampleVProgram != 0) {
+                GLES20.glDeleteProgram(supersampleVProgram);
+                supersampleVProgram = 0;
+            }
+            if (supersampleTexture != null) {
+                GLES20.glDeleteTextures(1, supersampleTexture, 0);
+                supersampleTexture = null;
+            }
+            if (supersampleFrameBuffer != null) {
+                GLES20.glDeleteFramebuffers(1, supersampleFrameBuffer, 0);
+                supersampleFrameBuffer = null;
             }
         }
 
@@ -2852,8 +3167,19 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 videoEditedInfo.iv = iv;
                 videoEditedInfo.estimatedSize = Math.max(1, size);
                 videoEditedInfo.framerate = 25;
-                videoEditedInfo.resultWidth = videoEditedInfo.originalWidth = 360;
-                videoEditedInfo.resultHeight = videoEditedInfo.originalHeight = 360;
+                // Was hardcoded to the legacy 360x360 round-video size regardless of the actual
+                // configured/encoded resolution - harmless while 360 was the only size that ever
+                // existed, but once resolution became configurable this meant every recording
+                // declared the wrong dimensions in TL_documentAttributeVideo (w/h come straight
+                // from resultWidth/resultHeight - see SendMessagesHelper), regardless of what was
+                // actually encoded. Round-video players (ours included) size their circular
+                // viewport/scale against this declared value, not the decoded bitstream's real
+                // resolution, so a big enough mismatch shows up as content rendered smaller than
+                // the circular mask expects - worse the further the real resolution strays from
+                // 360 (barely visible at 384/448, a visible black rim at 640, most of the frame
+                // black at 960 - see FINDINGS.md).
+                videoEditedInfo.resultWidth = videoEditedInfo.originalWidth = videoWidth;
+                videoEditedInfo.resultHeight = videoEditedInfo.originalHeight = videoHeight;
                 videoEditedInfo.originalPath = previewFile.getAbsolutePath();
                 setupVideoPlayer(previewFile);
                 videoEditedInfo.estimatedDuration = recordedTime;
@@ -2948,8 +3274,10 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         videoEditedInfo.key = key;
                         videoEditedInfo.iv = iv;
                         videoEditedInfo.framerate = 25;
-                        videoEditedInfo.resultWidth = videoEditedInfo.originalWidth = 360;
-                        videoEditedInfo.resultHeight = videoEditedInfo.originalHeight = 360;
+                        // See the other resultWidth/resultHeight assignment above for why this
+                        // isn't hardcoded to the legacy 360 round-video size.
+                        videoEditedInfo.resultWidth = videoEditedInfo.originalWidth = videoWidth;
+                        videoEditedInfo.resultHeight = videoEditedInfo.originalHeight = videoHeight;
                         videoEditedInfo.originalPath = videoFile.getAbsolutePath();
                         videoEditedInfo.notReadyYet = true;
                         videoEditedInfo.thumb = firstFrameThumb;
@@ -3100,8 +3428,10 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         videoEditedInfo.key = key;
                         videoEditedInfo.iv = iv;
                         videoEditedInfo.framerate = 25;
-                        videoEditedInfo.resultWidth = videoEditedInfo.originalWidth = 360;
-                        videoEditedInfo.resultHeight = videoEditedInfo.originalHeight = 360;
+                        // See the other resultWidth/resultHeight assignment above for why this
+                        // isn't hardcoded to the legacy 360 round-video size.
+                        videoEditedInfo.resultWidth = videoEditedInfo.originalWidth = videoWidth;
+                        videoEditedInfo.resultHeight = videoEditedInfo.originalHeight = videoHeight;
                         videoEditedInfo.originalPath = videoFile.getAbsolutePath();
                         final VideoEditedInfo info = videoEditedInfo;
                         if (send == ENCODER_SEND_SEND) {
@@ -3161,6 +3491,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 overlayHelper.destroy();
                 overlayHelper = null;
             }
+            destroySupersamplePipeline();
             AndroidUtilities.runOnUIThread(() -> {
                 InstantCameraView.this.videoEncoder = null;
             });
@@ -3407,6 +3738,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     mediaMuxer.setAllowSyncFiles(allowSendingWhileRecording = SharedConfig.deviceIsHigh());
 
                     PixelCameraLog.marker("round video " + videoWidth + "x" + videoHeight
+                            + " capture:" + (previewSize[0] != null ? previewSize[0].getWidth() + "x" + previewSize[0].getHeight() : "?")
+                            + " supersample:" + shouldSupersampleDownscale(previewSize[0])
+                            + " downscaleFilter:" + PixelGramSettings.getDownscaleFilter() + " dither:" + PixelGramSettings.getDitherAmountLsb() + "xLSB"
                             + " video:" + videoBitrate + " audio:" + PixelGramSettings.getAudioBitrate()
                             + " nr:" + PixelGramSettings.getNoiseReductionMode() + " edge:" + PixelGramSettings.getEdgeMode()
                             + " tonemap:" + PixelGramSettings.getTonemapMode()
@@ -3508,6 +3842,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 overlayHelper = null;
             }
             overlayHelper = new InstantCameraVideoEncoderOverlayHelper(videoWidth, videoHeight);
+            setupSupersamplePipeline(previewSize[0]);
 
             String vertexShaderSource, fragmentShaderSource;
             if (overlayHelper != null) {
@@ -3747,6 +4082,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 overlayHelper.destroy();
                 overlayHelper = null;
             }
+            destroySupersamplePipeline();
             try {
                 if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
                     EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);

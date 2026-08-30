@@ -34,6 +34,7 @@ import androidx.annotation.RequiresApi;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
@@ -87,10 +88,14 @@ public class Camera2Session {
     private int[] availableTonemapModes = new int[0];
     private Range<Integer> exposureCompensationRange;
     private Rational exposureCompensationStep;
+    // Explicitly pinned every request below to keep the HAL from picking its own default zoom -
+    // see the CONTROL_ZOOM_RATIO block in updateCaptureRequest() for why this is necessary now.
+    private Range<Float> zoomRatioRange;
     private int maxRegionsAe;
     private Rect currentFaceAeRect;
     private long lastFaceLogTimeMs;
     private long lastAeRegionsLogTimeMs;
+    private long lastZoomCropLogTimeMs;
 
     private final Size previewSize;
 
@@ -122,7 +127,11 @@ public class Camera2Session {
                 }
                 if (bestAspectRatio <= 0 || Math.abs((float) viewWidth / viewHeight - bestAspectRatio) > Math.abs((float) viewWidth / viewHeight - cameraAspectRatio)) {
                     if (confMap != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        Size size = chooseOptimalSize(confMap.getOutputSizes(SurfaceTexture.class), viewWidth, viewHeight, false);
+                        // Request a supersampled capture size, not the render target directly - the
+                        // GL downscale in InstantCameraView does its own proper multi-tap filtering,
+                        // so feeding it more source detail than the ISP's own (unknown-quality)
+                        // scaler would produce is the whole point. See chooseSupersampleCaptureSize.
+                        Size size = chooseSupersampleCaptureSize(confMap.getOutputSizes(SurfaceTexture.class), viewWidth, viewHeight);
                         if (size != null) {
                             bestAspectRatio = cameraAspectRatio;
                             cameraId = id;
@@ -206,6 +215,7 @@ public class Camera2Session {
         captureCallback = new CameraCaptureSession.CaptureCallback() {
             @Override
             public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {
+                logZoomCropReadback(result);
                 onFaceDetectionResult(result);
             }
         };
@@ -231,6 +241,9 @@ public class Camera2Session {
             availableTonemapModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES);
             exposureCompensationRange = cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
             exposureCompensationStep = cameraCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                zoomRatioRange = cameraCharacteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+            }
             maxRegionsAe = checkMaxRegionsAe(cameraCharacteristics, cameraId, isFront);
             PixelCameraLog.d(buildConfigSummary());
             cameraManager.openCamera(cameraId, cameraStateCallback, handler);
@@ -446,6 +459,22 @@ public class Camera2Session {
     // via STATISTICS_FACE_DETECT_MODE_FULL above) into CONTROL_AE_REGIONS, but only
     // rebuilds the capture request when the face has moved meaningfully - AE chasing
     // per-frame detection jitter causes visible brightness pumping.
+    // Verifies our requested CONTROL_ZOOM_RATIO/SCALER_CROP_REGION are actually reaching the HAL,
+    // rather than trusting what we set on the request - same "don't just trust the request"
+    // philosophy as the CONTROL_AE_REGIONS readback below. Independent of face detection support
+    // (unlike onFaceDetectionResult, which early-returns without it).
+    private void logZoomCropReadback(CaptureResult result) {
+        if (!PixelGramSettings.isDebugLoggingEnabled()) return;
+        long now = System.currentTimeMillis();
+        if (now - lastZoomCropLogTimeMs < 1000) return;
+        lastZoomCropLogTimeMs = now;
+        Float appliedZoomRatio = result.get(CaptureResult.CONTROL_ZOOM_RATIO);
+        Rect appliedCrop = result.get(CaptureResult.SCALER_CROP_REGION);
+        PixelCameraLog.d("camera #" + cameraId + ": requested zoomRatio=" + currentZoom + " cropRegion=" + cropRegion
+                + " | HAL-applied zoomRatio=" + appliedZoomRatio + " cropRegion=" + appliedCrop
+                + " | sensorSize=" + sensorSize);
+    }
+
     private void onFaceDetectionResult(CaptureResult result) {
         // Face detection runs whenever the hardware supports it, independent of the
         // face-AE-metering setting - that setting only gates whether the tracked face rect
@@ -934,11 +963,54 @@ public class Camera2Session {
                 }
             }
 
-            if (sensorSize != null && Math.abs(currentZoom - 1f) >= 0.01f) {
+            // Set explicitly on every request, not just when we're actually zoomed - on this
+            // device the HAL was picking its own default CONTROL_ZOOM_RATIO (observed via logcat
+            // as "AHal::GsCapture: SetZoom: Update zoom from 0 to 0.5") once the capture stream
+            // got large enough (see the supersample capture-size change), landing well below our
+            // own always-1.0-or-above zoom model and visibly shifting/cropping the frame. Pinning
+            // this ourselves - the same "always set, never just omit" fix already applied to
+            // CONTROL_AE_REGIONS above - removes the dependency on whatever default the HAL
+            // chooses for a given stream configuration.
+            if (zoomRatioRange != null) {
+                try {
+                    float requestedZoomRatio = Utilities.clamp(currentZoom, zoomRatioRange.getUpper(), zoomRatioRange.getLower());
+                    captureRequestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, requestedZoomRatio);
+                } catch (Exception e) {
+                    PixelCameraLog.w("camera #" + cameraId + ": CONTROL_ZOOM_RATIO set failed", e);
+                }
+            }
+
+            // Always define an explicit, sensor-centered crop matching previewSize's aspect ratio
+            // - not just when actually zoomed. This sensor's active array is 3440x2448 (not
+            // square), so our square 1920x1920 supersample capture requires the HAL to crop it
+            // down to 1:1 somehow; with no explicit crop, its default for that specific
+            // resolution wasn't vertically centered (far more headroom above the subject than
+            // below - the reported "video shifted down" bug). The smaller pre-supersampling
+            // request apparently mapped to a differently (better) centered HAL default, which is
+            // exactly the kind of per-resolution behavior this removes any dependence on.
+            //
+            // Deliberately NOT scaled by currentZoom - per CaptureRequest.SCALER_CROP_REGION's
+            // own docs, once CONTROL_ZOOM_RATIO is in use (set unconditionally above), this crop
+            // "should be left as the default activeArray size" and used only for
+            // letterboxing/pillarboxing to the output aspect; a crop additionally shrunk by zoom
+            // is "windowboxing", which the framework will just override back to the full active
+            // array whenever zoomRatio != 1 anyway. Zoom amount comes entirely from
+            // CONTROL_ZOOM_RATIO now - this crop only ever corrects aspect.
+            if (sensorSize != null) {
+                final float outputAspect = previewSize.getWidth() / (float) previewSize.getHeight();
+                final float sensorAspect = sensorSize.width() / (float) sensorSize.height();
+                final int cropWidth, cropHeight;
+                if (outputAspect > sensorAspect) {
+                    cropWidth = sensorSize.width();
+                    cropHeight = Math.round(cropWidth / outputAspect);
+                } else {
+                    cropHeight = sensorSize.height();
+                    cropWidth = Math.round(cropHeight * outputAspect);
+                }
                 final int centerX = sensorSize.width() / 2;
                 final int centerY = sensorSize.height() / 2;
-                final int deltaX = (int) ((0.5f * sensorSize.width()) / currentZoom);
-                final int deltaY = (int) ((0.5f * sensorSize.height()) / currentZoom);
+                final int deltaX = cropWidth / 2;
+                final int deltaY = cropHeight / 2;
                 cropRegion.set(
                         centerX - deltaX,
                         centerY - deltaY,
@@ -1005,6 +1077,40 @@ public class Camera2Session {
         }
     }
 
+
+    // Long edge every FULL/LEVEL_3 device is expected to sustain 30fps at for a non-stalling
+    // (SurfaceTexture/record-class) stream - this is a conservative heuristic cap, not a queried
+    // per-size android.hardware.camera2.params.StreamConfigurationMap.getOutputMinFrameDuration()
+    // answer (that would give an exact number for this specific device/size, but wasn't gathered
+    // here). Keeps the picker out of still-capture-only sizes that may not hold 30fps; verify
+    // empirically (watch for dropped/stuttering frames in a real recording) before raising it.
+    // See FINDINGS.md for the measured candidate sizes on the Pixel 11 Pro's front/rear cameras.
+    private static final int SUPERSAMPLE_MAX_DIMENSION = 1920;
+
+    // Largest near-square SurfaceTexture output the sensor offers within SUPERSAMPLE_MAX_DIMENSION,
+    // for oversampling the round-video capture ahead of a GL downscale to the render target
+    // (see InstantCameraView's supersample pipeline). Falls back to the old direct-to-target
+    // chooseOptimalSize behaviour if nothing on the sensor fits under the cap (e.g. a legacy/small
+    // sensor with no size anywhere near square that low).
+    private static Size chooseSupersampleCaptureSize(Size[] choices, int fallbackWidth, int fallbackHeight) {
+        Size best = null;
+        float bestAspectDelta = Float.MAX_VALUE;
+        for (Size option : choices) {
+            int w = option.getWidth(), h = option.getHeight();
+            if (Math.max(w, h) > SUPERSAMPLE_MAX_DIMENSION) continue;
+            float aspectDelta = Math.abs((float) w / h - 1f);
+            if (best == null
+                    || aspectDelta < bestAspectDelta - 0.001f
+                    || (Math.abs(aspectDelta - bestAspectDelta) <= 0.001f && (long) w * h > (long) best.getWidth() * best.getHeight())) {
+                best = option;
+                bestAspectDelta = aspectDelta;
+            }
+        }
+        if (best != null) {
+            return best;
+        }
+        return chooseOptimalSize(choices, fallbackWidth, fallbackHeight, false);
+    }
 
     public static Size chooseOptimalSize(Size[] choices, int width, int height, boolean notBigger) {
         List<Size> bigEnoughWithAspectRatio = new ArrayList<>(choices.length);

@@ -67,6 +67,18 @@ public class PixelGramSettings {
      * (narrow/directional) per setPreferredMicrophoneFieldDimension's documented range. */
     public static final float[] MIC_FIELD_DIMENSION_VALUES = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
 
+    /** Which 9-tap kernel the two supersample GL passes use to downscale from the capture size
+     * to the render target (see InstantCameraView's SUPERSAMPLE_*_FRAGMENT_SHADER variants).
+     * Lanczos-2 is sharpest but has negative lobes that ring on fine high-contrast detail (beard
+     * stubble, hair) - that ringing is high-frequency content the video encoder has to spend bits
+     * on, and at typical round-video bitrates it can't afford to, so it degrades into blocking
+     * instead. Box and Gaussian are strictly positive (no ringing), producing a softer but more
+     * compressible signal - worth A/B-ing against Lanczos at a given bitrate rather than assuming
+     * sharper-before-encoding means better-after-encoding. */
+    public static final int DOWNSCALE_FILTER_LANCZOS = 0;
+    public static final int DOWNSCALE_FILTER_BOX = 1;
+    public static final int DOWNSCALE_FILTER_GAUSSIAN = 2;
+
     private static final String KEY_NOISE_REDUCTION = "noise_reduction_mode";
     private static final String KEY_EDGE_MODE = "edge_mode";
     private static final String KEY_TONEMAP_MODE = "tonemap_mode";
@@ -85,6 +97,8 @@ public class PixelGramSettings {
     private static final String KEY_MIC_FIELD_DIMENSION = "mic_field_dimension";
     private static final String KEY_VOICE_ISOLATION_MODE = "voice_isolation_mode";
     private static final String KEY_GATE_THRESHOLD_DB = "voice_isolation_gate_threshold_db";
+    private static final String KEY_DOWNSCALE_FILTER = "downscale_filter_mode";
+    private static final String KEY_DITHER_AMOUNT_LSB = "dither_amount_lsb";
 
     public static final int DEFAULT_NOISE_REDUCTION = NOISE_REDUCTION_FAST;
     public static final int DEFAULT_EDGE_MODE = EDGE_MODE_FAST;
@@ -93,7 +107,13 @@ public class PixelGramSettings {
     public static final int DEFAULT_TONEMAP_MODE = TONEMAP_MODE_FAST;
     public static final boolean DEFAULT_FACE_AE_METERING = true;
     public static final float DEFAULT_EXPOSURE_COMPENSATION = 0.3f;
-    public static final int DEFAULT_RESOLUTION = 448;
+    // Set from A/B testing across the full resolution range (see FINDINGS.md): resolution
+    // mattered more than bitrate, Lanczos looked clearly better than Box/Gaussian, and 512px is
+    // the practical safe ceiling for cross-client playback (confirmed breakage above that on both
+    // Android and iOS, on a client capable of exceeding what any mainstream client has ever
+    // shipped - see FINDINGS.md). 480 is a clean 4:1 downscale from the 1920 supersample capture
+    // and stays comfortably clear of that ceiling.
+    public static final int DEFAULT_RESOLUTION = 480;
     public static final int DEFAULT_VIDEO_BITRATE = 1_000_000;
     public static final int DEFAULT_AUDIO_BITRATE = 96_000;
     public static final boolean DEFAULT_DEBUG_LOGGING = false;
@@ -115,6 +135,12 @@ public class PixelGramSettings {
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
     public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_BANDPASS_GATE;
     public static final float DEFAULT_GATE_THRESHOLD_DB = -45f;
+    public static final int DEFAULT_DOWNSCALE_FILTER = DOWNSCALE_FILTER_LANCZOS;
+    // In multiples of 1/255 (one 8-bit LSB), applied as +-0.5x this value. 0 = off. Matches what
+    // shipped without a setting (1x = +-0.5 LSB) as the default so existing recordings don't
+    // change until this is explicitly adjusted.
+    public static final float[] DITHER_AMOUNT_LSB_VALUES = {0f, 0.5f, 1f, 2f};
+    public static final float DEFAULT_DITHER_AMOUNT_LSB = 1f;
 
     private static SharedPreferences prefs() {
         return ApplicationLoader.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -368,6 +394,22 @@ public class PixelGramSettings {
         prefs().edit().putFloat(KEY_GATE_THRESHOLD_DB, db).apply();
     }
 
+    public static int getDownscaleFilter() {
+        return prefs().getInt(KEY_DOWNSCALE_FILTER, DEFAULT_DOWNSCALE_FILTER);
+    }
+
+    public static void setDownscaleFilter(int filter) {
+        prefs().edit().putInt(KEY_DOWNSCALE_FILTER, filter).apply();
+    }
+
+    public static float getDitherAmountLsb() {
+        return prefs().getFloat(KEY_DITHER_AMOUNT_LSB, DEFAULT_DITHER_AMOUNT_LSB);
+    }
+
+    public static void setDitherAmountLsb(float lsb) {
+        prefs().edit().putFloat(KEY_DITHER_AMOUNT_LSB, lsb).apply();
+    }
+
     private static Boolean micDirectionSupportedCache;
     private static Boolean micFieldDimensionSupportedCache;
 
@@ -454,6 +496,8 @@ public class PixelGramSettings {
                 .putFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION)
                 .putInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE)
                 .putFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB)
+                .putInt(KEY_DOWNSCALE_FILTER, DEFAULT_DOWNSCALE_FILTER)
+                .putFloat(KEY_DITHER_AMOUNT_LSB, DEFAULT_DITHER_AMOUNT_LSB)
                 .apply();
     }
 }

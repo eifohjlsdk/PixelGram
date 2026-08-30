@@ -77,6 +77,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int tonemapModeRow;
     private int faceAeMeteringRow;
     private int exposureCompensationRow;
+    private int downscaleFilterRow;
+    private int ditherAmountRow;
     private int divider2Row;
 
     private int headerAudioRow;
@@ -140,6 +142,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
         tonemapModeRow = rowCount++;
         faceAeMeteringRow = rowCount++;
         exposureCompensationRow = rowCount++;
+        downscaleFilterRow = rowCount++;
+        ditherAmountRow = rowCount++;
         divider2Row = rowCount++;
 
         headerAudioRow = rowCount++;
@@ -209,6 +213,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 ((TextCheckCell) view).setChecked(PixelGramSettings.isFaceAeMeteringEnabled());
             } else if (position == exposureCompensationRow) {
                 showExposureCompensationDialog();
+            } else if (position == downscaleFilterRow) {
+                showDownscaleFilterDialog();
+            } else if (position == ditherAmountRow) {
+                showDitherAmountDialog();
             } else if (position == voiceEnhancementRow) {
                 showVoiceEnhancementDialog();
             } else if (position == noiseSuppressionRow) {
@@ -311,9 +319,14 @@ public class PixelGramSettingsActivity extends BaseFragment {
 
     // --- Dialogs ---
 
+    // Ratio annotations are against the 1920px supersample capture size (see
+    // Camera2Session.chooseSupersampleCaptureSize / FINDINGS.md) - only shown where it comes out
+    // to a clean integer, since that's the point worth knowing (an exact-ratio downscale vs. one
+    // that lands between two capture texels). 384 is annotated as stock Telegram's own round-video
+    // resolution for reference, not because it's this app's default.
     private void showResolutionDialog() {
-        CharSequence[] options = {"384 px", "448 px (default)", "512 px"};
-        int[] values = {384, 448, 512};
+        CharSequence[] options = {"320 px (6:1)", "384 px (5:1, stock)", "448 px", "480 px (4:1, default)", "512 px", "640 px (3:1)", "960 px (2:1)"};
+        int[] values = {320, 384, 448, 480, 512, 640, 960};
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Resolution");
         builder.setItems(options, (dialog, which) -> {
@@ -324,8 +337,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showVideoBitrateDialog() {
-        CharSequence[] options = {"1.0 Mbps (default)", "1.2 Mbps", "1.5 Mbps"};
-        int[] values = {1_000_000, 1_200_000, 1_500_000};
+        CharSequence[] options = {"800 kbps", "1.0 Mbps (default)", "1.2 Mbps", "1.5 Mbps", "2 Mbps", "3 Mbps", "4 Mbps", "6 Mbps"};
+        int[] values = {800_000, 1_000_000, 1_200_000, 1_500_000, 2_000_000, 3_000_000, 4_000_000, 6_000_000};
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Video Bitrate");
         builder.setItems(options, (dialog, which) -> {
@@ -532,6 +545,34 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return Math.max(min, Math.min(max, value));
     }
 
+    private void showDownscaleFilterDialog() {
+        String[] names = {"Lanczos (default, sharpest)", "Box (softest, most compressible)", "Gaussian"};
+        int[] values = {
+                PixelGramSettings.DOWNSCALE_FILTER_LANCZOS,
+                PixelGramSettings.DOWNSCALE_FILTER_BOX,
+                PixelGramSettings.DOWNSCALE_FILTER_GAUSSIAN
+        };
+        boolean[] supported = {true, true, true};
+        showModeDialog("Downscale Filter", names, values, supported, downscaleFilterRow, PixelGramSettings::setDownscaleFilter);
+    }
+
+    /** LSB amount is a float, not one of showModeDialog's int values, same reason as
+     * showGateThresholdDialog - a plain setItems dialog rather than a reuse of that helper. */
+    private void showDitherAmountDialog() {
+        float[] values = PixelGramSettings.DITHER_AMOUNT_LSB_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            options[i] = formatDitherAmount(values[i]) + (values[i] == PixelGramSettings.DEFAULT_DITHER_AMOUNT_LSB ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Dither Amount");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setDitherAmountLsb(values[which]);
+            listAdapter.notifyItemChanged(ditherAmountRow);
+        });
+        showDialog(builder.create());
+    }
+
     private void showResetDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Reset to Defaults");
@@ -623,6 +664,19 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return String.format(Locale.US, "%.0f dB", db);
     }
 
+    private static String downscaleFilterName(int filter) {
+        switch (filter) {
+            case PixelGramSettings.DOWNSCALE_FILTER_BOX: return "Box";
+            case PixelGramSettings.DOWNSCALE_FILTER_GAUSSIAN: return "Gaussian";
+            default: return "Lanczos";
+        }
+    }
+
+    private static String formatDitherAmount(float lsb) {
+        if (lsb == 0f) return "Off";
+        return String.format(Locale.US, "%.1fx LSB", lsb);
+    }
+
     private static String voiceEnhancementName(int mode) {
         switch (mode) {
             case PixelGramSettings.VOICE_ENHANCEMENT_VOICE_COMMUNICATION: return "Voice communication";
@@ -654,6 +708,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || pos == resolutionRow || pos == videoBitrateRow || pos == audioBitrateRow
                     || pos == debugLoggingRow
                     || pos == noiseReductionRow || pos == edgeModeRow || pos == tonemapModeRow || pos == faceAeMeteringRow || pos == exposureCompensationRow
+                    || pos == downscaleFilterRow || pos == ditherAmountRow
                     || pos == voiceEnhancementRow
                     || (pos == noiseSuppressionRow && NoiseSuppressor.isAvailable())
                     || (pos == agcRow && AutomaticGainControl.isAvailable())
@@ -736,6 +791,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndValue("Tone Mapping", tonemapModeName(PixelGramSettings.getTonemapMode()), true);
                     } else if (position == exposureCompensationRow) {
                         cell.setTextAndValue("Exposure Compensation", formatEv(PixelGramSettings.getExposureCompensationEv()), false);
+                    } else if (position == downscaleFilterRow) {
+                        cell.setTextAndValue("Downscale Filter", downscaleFilterName(PixelGramSettings.getDownscaleFilter()), true);
+                    } else if (position == ditherAmountRow) {
+                        cell.setTextAndValue("Dither Amount", formatDitherAmount(PixelGramSettings.getDitherAmountLsb()), false);
                     } else if (position == voiceEnhancementRow) {
                         cell.setTextAndValue("Voice Enhancement", voiceEnhancementName(PixelGramSettings.getVoiceEnhancementMode()), true);
                     } else if (position == micGainRow) {

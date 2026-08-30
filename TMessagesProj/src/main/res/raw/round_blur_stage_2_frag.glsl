@@ -1,4 +1,13 @@
-precision mediump float;
+// Stock stayed safe on mediump for a decade because no round video anywhere ever exceeded
+// ~512px (see FINDINGS.md's cross-client survey) - this shader operates on raw gl_FragCoord
+// pixel coordinates (unlike stages 0/1/3, which only touch normalized [0,1] texture coordinates
+// and are resolution-magnitude-independent), and length(center - gl_FragCoord.xy) squares that
+// coordinate internally. At mediump/FP16's ~65504 max representable value, that overflows once
+// |center - fragCoord| exceeds ~256 in either axis - i.e. once the frame is wider than ~512px -
+// producing infinity/NaN that corrupts the sharp/blur mix into black for every fragment beyond
+// that radius. highp has enough range (>3e38) that this never comes close to overflowing at any
+// resolution this app will ever produce.
+precision highp float;
 varying vec2 vTextureCoord;
 
 uniform sampler2D sTexture; // normal texture
