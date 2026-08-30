@@ -215,14 +215,20 @@ public class PixelGramSettings {
     public static final int DEFAULT_MIC_GAIN_VOICE_MESSAGE = MIC_GAIN_3X;
     public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
-    public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_BANDPASS_GATE;
+    // Off as of 1.0.2: the three-way comparison in FINDINGS.md found the bandpass/gate chain adds
+    // no measurable benefit once RNNoise (DEFAULT_SPEECH_ENHANCEMENT_MODE) is active - redundant
+    // rather than complementary, so it's off by default now that RNNoise is on by default.
+    public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_OFF;
     public static final float DEFAULT_GATE_THRESHOLD_DB = -45f;
-    public static final int DEFAULT_SPEECH_ENHANCEMENT_MODE = SPEECH_ENHANCEMENT_OFF;
-    // 90% was the initial guess before listening; settled on 70% after A/B'ing the full range -
-    // 100%/90%/80% all had audible word-ending clipping and full background-music elimination to
-    // varying degrees, 70% was the point where word endings survive and background is attenuated
-    // rather than erased. See FINDINGS.md's speech enhancement section.
-    public static final float DEFAULT_SPEECH_ENHANCEMENT_WET = 0.7f;
+    // RNNoise on by default as of 1.0.2, at DEFAULT_SPEECH_ENHANCEMENT_WET - see FINDINGS.md's
+    // speech enhancement section for the splice-bug fix, the three-way comparison, and the A/B
+    // process that settled the wet/dry blend.
+    public static final int DEFAULT_SPEECH_ENHANCEMENT_MODE = SPEECH_ENHANCEMENT_RNNOISE;
+    // 90% was the initial guess before listening; 70% was the first settled value after A/B'ing
+    // the full range (100%/90%/80% all had audible word-ending clipping and full background-
+    // music elimination to varying degrees); further listening moved this to 60%. See
+    // FINDINGS.md's speech enhancement section.
+    public static final float DEFAULT_SPEECH_ENHANCEMENT_WET = 0.6f;
     public static final int DEFAULT_DOWNSCALE_FILTER = DOWNSCALE_FILTER_LANCZOS;
     // In multiples of 1/255 (one 8-bit LSB), applied as +-0.5x this value. 0 = off. Matches what
     // shipped without a setting (1x = +-0.5 LSB) as the default so existing recordings don't

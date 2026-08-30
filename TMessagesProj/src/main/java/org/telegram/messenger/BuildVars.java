@@ -29,7 +29,7 @@ public class BuildVars {
     // The fork's own release version - independent of versionName/APP_VERSION_NAME, which
     // stays pinned to the upstream Telegram base (12.10.0) it's built against. GitHub release
     // tags (vX.Y.Z) are compared against this, not versionName - see PixelGramUpdateChecker.
-    public static final String PIXELGRAM_VERSION = "1.0.1";
+    public static final String PIXELGRAM_VERSION = "1.0.2";
 
     // Every public Telegram-compatible client needs its own api_id/api_hash from
     // https://my.telegram.org - this fork doesn't ship one baked in. Populated at runtime
