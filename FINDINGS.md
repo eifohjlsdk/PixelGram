@@ -601,18 +601,38 @@ talking-head circle, and the one lever available to fix it (EV compensation) doe
 the feature entirely (setting, fps-range-60 request, frame decimation, marker-line field, and
 logging) rather than shipping it off-by-default with a known-broken on state.
 
-**`r_frame_rate` reported 60 for capped clips - root cause found, not a metadata bug.** The H.264
-SPS's VUI `timing_info_present_flag` is 0 (no VUI timing at all), and the container's own STTS
-table is genuinely ~30fps (3000/3001-tick deltas, 90000 timescale). `ffprobe -v 48` shows its own
-reasoning: it doesn't average sample durations, it looks for the finest grid every delta is an
-integer multiple of, and picks the candidate with lowest total error (`rfps: 60.000000 0.000085`
-beat `rfps: 29.833333 0.019510`). Two frames per capped clip carried ~50ms gaps (4500/4481 ticks) -
-clean multiples of 1500 (60fps) but 1.5x multiples of 3000 (30fps) - and those two outliers were
-enough to tip the guess to 60. Mechanism: kept frames carry real hardware capture timestamps from a
-genuine 60fps source, so any real jitter in that source lands in 1500-tick-sized steps rather than
-3000-tick ones. A real fix, if this feature returns, is snapping each kept frame's output PTS to
-the nearest exact 1/30s grid point rather than passing the raw timestamp through - moot now that
-the feature is reverted, and not implemented.
+## ffprobe's r_frame_rate guesser can report 2x the real rate for a decimated stream
+
+Kept as general knowledge even though the feature that surfaced it (exposure cap, above) was
+dropped - relevant again if this codebase ever decimates frames for another reason, or if a similar
+"declared vs. measured" frame-rate report needs debugging.
+
+While the exposure cap was active (60fps capture, 2:1 decimation to a genuine 30fps output),
+`ffprobe` reported `r_frame_rate=60/1` for the output file despite every real signal saying it was
+30fps: `avg_frame_rate` computed to ~29.93, and direct per-packet `duration_time` was uniformly
+~0.033333s. Root-caused, and it's not a metadata bug: the H.264 SPS's VUI `timing_info_present_flag`
+is 0 (no VUI timing at all), and the container's own STTS table is genuinely ~30fps (3000/3001-tick
+deltas, 90000 timescale) - there's no wrong value stored anywhere.
+
+`ffprobe -v 48` shows its own reasoning: **`r_frame_rate` isn't an average, it's the finest time
+grid every observed sample duration is (approximately) an integer multiple of**, chosen by lowest
+total quantization error across candidates (`rfps: 60.000000 0.000085` beat
+`rfps: 29.833333 0.019510`). Two frames in the capped clip carried ~50ms gaps (4500/4481 ticks) -
+clean multiples of 1500 (60fps) but 1.5x (non-integer) multiples of 3000 (30fps) - and those two
+outliers alone were enough to tip the guess to 60, even though they're a small minority of ~465
+samples overwhelmingly sitting at 3000/3001.
+
+**Mechanism, generalizable beyond this specific feature**: kept frames carried real hardware
+capture timestamps from a genuine 60fps source before decimation, so any real-world jitter in that
+source (a frame arriving a fraction of a tick early/late) lands in 1500-tick-sized steps rather than
+3000-tick ones once every-other-frame is dropped. Decimating a *real* timestamped stream down to a
+lower nominal rate preserves the original stream's finer timing granularity in whatever residual
+jitter exists, and ffprobe's grid-fitting heuristic is sensitive to exactly that: a handful of
+outliers that happen to be clean multiples of the *pre-decimation* period can outweigh the
+overwhelming majority sitting at the *post-decimation* period. A real fix, if frame decimation
+returns in some other form, is snapping each kept frame's output PTS to the nearest exact grid point
+of the *target* rate rather than passing the raw pre-decimation timestamp through - not implemented
+here since it became moot once the exposure cap itself was reverted.
 
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
