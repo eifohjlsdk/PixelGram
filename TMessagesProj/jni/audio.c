@@ -221,14 +221,18 @@ static int writeOggPage(ogg_page *page, FILE *os) {
     return written;
 }
 
-const opus_int32 bitrate = OPUS_BITRATE_MAX;
 const opus_int32 frame_size = 960;
-const int with_cvbr = 1;
 const int max_ogg_delay = 0;
 const int comment_padding = 512;
 
 opus_int32 rate = 48000;
 opus_int32 coding_rate = 48000;
+
+// Set per-recording from initRecorder()'s parameters (PixelGramSettings.getOpusApplicationMode()/
+// getOpusBitrate() on the Java side) - see FINDINGS.md's Opus encoder configuration section for
+// why this replaced the previous fixed OPUS_APPLICATION_VOIP + OPUS_BITRATE_MAX.
+int opus_application = OPUS_APPLICATION_AUDIO;
+opus_int32 opus_bitrate = 32000;
 
 ogg_int32_t _packetId;
 OpusEncoder *_encoder = 0;
@@ -297,11 +301,13 @@ void cleanupRecorder() {
     memset(&og, 0, sizeof(ogg_page));
 }
 
-int initRecorder(const char *path, opus_int32 sampleRate) {
+int initRecorder(const char *path, opus_int32 sampleRate, int application, opus_int32 bitrateBps) {
     cleanupRecorder();
 
     coding_rate = sampleRate;
     rate = sampleRate;
+    opus_application = application;
+    opus_bitrate = bitrateBps;
 
     if (!path) {
         LOGE("path is null");
@@ -342,22 +348,34 @@ int initRecorder(const char *path, opus_int32 sampleRate) {
     header.nb_streams = 1;
     
     int result = OPUS_OK;
-    _encoder = opus_encoder_create(coding_rate, 1, OPUS_APPLICATION_VOIP, &result);
+    _encoder = opus_encoder_create(coding_rate, 1, opus_application, &result);
     if (result != OPUS_OK) {
         LOGE("Error cannot create encoder: %s", opus_strerror(result));
         return 0;
     }
-    
+
     min_bytes = max_frame_bytes = (1275 * 3 + 7) * header.nb_streams;
     _packet = malloc(max_frame_bytes);
-    
-    result = opus_encoder_ctl(_encoder, OPUS_SET_BITRATE(bitrate));
-    //result = opus_encoder_ctl(_encoder, OPUS_SET_COMPLEXITY(10));
+
+    result = opus_encoder_ctl(_encoder, OPUS_SET_BITRATE(opus_bitrate));
     if (result != OPUS_OK) {
         LOGE("Error OPUS_SET_BITRATE returned: %s", opus_strerror(result));
         return 0;
     }
-    
+
+    // Explicit rather than relying on library defaults, per FINDINGS.md's Opus encoder
+    // configuration section: VBR on, unconstrained (a locally-recorded-then-uploaded file has no
+    // hard per-frame bitrate ceiling to respect), speech-biased mode selection, complexity at
+    // libopus's own default (10) stated explicitly rather than left implicit, DTX/inband FEC off
+    // (no real-time transmission to protect against packet loss, no silence-detection benefit for
+    // a file that gets fully encoded either way).
+    opus_encoder_ctl(_encoder, OPUS_SET_VBR(1));
+    opus_encoder_ctl(_encoder, OPUS_SET_VBR_CONSTRAINT(0));
+    opus_encoder_ctl(_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+    opus_encoder_ctl(_encoder, OPUS_SET_COMPLEXITY(10));
+    opus_encoder_ctl(_encoder, OPUS_SET_DTX(0));
+    opus_encoder_ctl(_encoder, OPUS_SET_INBAND_FEC(0));
+
 #ifdef OPUS_SET_LSB_DEPTH
     result = opus_encoder_ctl(_encoder, OPUS_SET_LSB_DEPTH(MAX(8, MIN(24, inopt.samplesize))));
     if (result != OPUS_OK) {
@@ -567,10 +585,10 @@ int writeFrameFloat(float *framePcmFloats, uint32_t frameSampleCount, int end) {
     return muxOggFrame(nbBytes, end);
 }
 
-JNIEXPORT jint Java_org_telegram_messenger_MediaController_startRecord(JNIEnv *env, jclass class, jstring path, jint sampleRate) {
+JNIEXPORT jint Java_org_telegram_messenger_MediaController_startRecord(JNIEnv *env, jclass class, jstring path, jint sampleRate, jint application, jint bitrate) {
     const char *pathStr = (*env)->GetStringUTFChars(env, path, 0);
 
-    int32_t result = initRecorder(pathStr, sampleRate);
+    int32_t result = initRecorder(pathStr, sampleRate, application, bitrate);
 
     if (pathStr != 0) {
         (*env)->ReleaseStringUTFChars(env, path, pathStr);
@@ -971,7 +989,10 @@ int cropOpusAudio(const char *inputPath, const char *outputPath, float startTime
         return 0;
     }
 
-    if (!initRecorder(outputPath, rate)) {
+    // Re-encoding an existing file (crop), not a fresh recording - not threaded through
+    // PixelGramSettings, so uses the same values as the app's current recording defaults
+    // (OPUS_APPLICATION_AUDIO, 32kbps) rather than re-deriving whatever the original file used.
+    if (!initRecorder(outputPath, rate, OPUS_APPLICATION_AUDIO, 32000)) {
         LOGE("Failed to init recorder");
         op_free(opusFile);
         return 0;
@@ -1064,7 +1085,9 @@ int joinOpusAudios(const char* file1, const char* file2, const char* dest) {
     int channels = MIN(head1->channel_count, head2->channel_count);
     opus_int32 rate = 48000;
 
-    if (!initRecorder(dest, rate)) {
+    // Re-encoding existing files (join), not a fresh recording - see cropOpusFile's identical
+    // comment above for why this uses the app's current recording defaults directly.
+    if (!initRecorder(dest, rate, OPUS_APPLICATION_AUDIO, 32000)) {
         LOGE("Failed to init recorder");
         op_free(opusFile1);
         op_free(opusFile2);

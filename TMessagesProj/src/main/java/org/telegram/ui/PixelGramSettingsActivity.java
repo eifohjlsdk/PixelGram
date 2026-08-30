@@ -93,6 +93,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int gateThresholdRow;
     private int speechEnhancementRow;
     private int denoiserStrengthRow;
+    // Voice messages only - see audio.c's initRecorder()/FINDINGS.md's Opus encoder
+    // configuration section. Round video's audio path is AAC/MediaCodec, unrelated to these.
+    private int opusApplicationRow;
+    private int opusBitrateRow;
     private int divider3Row;
 
     private int resetRow;
@@ -160,6 +164,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
         gateThresholdRow = rowCount++;
         speechEnhancementRow = rowCount++;
         denoiserStrengthRow = rowCount++;
+        opusApplicationRow = rowCount++;
+        opusBitrateRow = rowCount++;
         divider3Row = rowCount++;
 
         resetRow = rowCount++;
@@ -263,6 +269,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 showSpeechEnhancementDialog();
             } else if (position == denoiserStrengthRow) {
                 showDenoiserStrengthDialog();
+            } else if (position == opusApplicationRow) {
+                showOpusApplicationDialog();
+            } else if (position == opusBitrateRow) {
+                showOpusBitrateDialog();
             } else if (position == resetRow) {
                 showResetDialog();
             } else if (position == checkNowRow) {
@@ -497,6 +507,36 @@ public class PixelGramSettingsActivity extends BaseFragment {
         showDialog(builder.create());
     }
 
+    /** Voice-message Opus encoder application mode - see audio.c/FINDINGS.md's Opus encoder
+     * configuration section. */
+    private void showOpusApplicationDialog() {
+        String[] names = {"Audio (default)", "VOIP"};
+        int[] values = {
+                PixelGramSettings.OPUS_APPLICATION_AUDIO,
+                PixelGramSettings.OPUS_APPLICATION_VOIP
+        };
+        boolean[] supported = {true, true};
+        showModeDialog("Opus Application Mode", names, values, supported, opusApplicationRow, PixelGramSettings::setOpusApplicationMode);
+    }
+
+    /** Voice-message Opus encoder VBR bitrate target - see audio.c/FINDINGS.md's Opus encoder
+     * configuration section. Int values, same reason as showDenoiserStrengthDialog for a plain
+     * setItems dialog rather than showModeDialog. */
+    private void showOpusBitrateDialog() {
+        int[] values = PixelGramSettings.OPUS_BITRATE_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            options[i] = formatOpusBitrate(values[i]) + (values[i] == PixelGramSettings.DEFAULT_OPUS_BITRATE ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Opus Bitrate");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setOpusBitrate(values[which]);
+            listAdapter.notifyItemChanged(opusBitrateRow);
+        });
+        showDialog(builder.create());
+    }
+
     /** Threshold is a float, not one of showModeDialog's int values, same reason as
      * showMicFieldDimensionDialog - a plain setItems dialog rather than a reuse of that helper. */
     private void showGateThresholdDialog() {
@@ -721,6 +761,14 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return Math.round(wet * 100) + "% wet";
     }
 
+    private static String opusApplicationName(int mode) {
+        return mode == PixelGramSettings.OPUS_APPLICATION_VOIP ? "VOIP" : "Audio";
+    }
+
+    private static String formatOpusBitrate(int bps) {
+        return (bps / 1000) + " kbps";
+    }
+
 
     private static String downscaleFilterName(int filter) {
         switch (filter) {
@@ -777,6 +825,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == micFieldDimensionRow && PixelGramSettings.isMicFieldDimensionSupported())
                     || pos == voiceIsolationRow || pos == gateThresholdRow
                     || pos == speechEnhancementRow || pos == denoiserStrengthRow
+                    || pos == opusApplicationRow || pos == opusBitrateRow
                     || pos == resetRow || pos == checkNowRow;
         }
 
@@ -874,7 +923,11 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     } else if (position == speechEnhancementRow) {
                         cell.setTextAndValue("Speech Enhancement", speechEnhancementName(PixelGramSettings.getSpeechEnhancementMode()), true);
                     } else if (position == denoiserStrengthRow) {
-                        cell.setTextAndValue("Denoiser Strength", formatDenoiserStrength(PixelGramSettings.getSpeechEnhancementWetFraction()), false);
+                        cell.setTextAndValue("Denoiser Strength", formatDenoiserStrength(PixelGramSettings.getSpeechEnhancementWetFraction()), true);
+                    } else if (position == opusApplicationRow) {
+                        cell.setTextAndValue("Opus Application Mode", opusApplicationName(PixelGramSettings.getOpusApplicationMode()), true);
+                    } else if (position == opusBitrateRow) {
+                        cell.setTextAndValue("Opus Bitrate", formatOpusBitrate(PixelGramSettings.getOpusBitrate()), false);
                     } else if (position == resetRow) {
                         cell.setCanDisable(true);
                         cell.setTextColor(Theme.getColor(Theme.key_text_RedRegular));

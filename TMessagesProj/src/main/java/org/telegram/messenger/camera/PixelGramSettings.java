@@ -115,6 +115,8 @@ public class PixelGramSettings {
     private static final String KEY_RESOLUTION = "resolution";
     private static final String KEY_VIDEO_BITRATE = "video_bitrate";
     private static final String KEY_AUDIO_BITRATE = "audio_bitrate";
+    private static final String KEY_OPUS_APPLICATION = "opus_application_mode";
+    private static final String KEY_OPUS_BITRATE = "opus_bitrate";
     private static final String KEY_DEBUG_LOGGING = "debug_logging_enabled";
     private static final String KEY_VOICE_ENHANCEMENT = "voice_enhancement_mode";
     private static final String KEY_NOISE_SUPPRESSION = "noise_suppression_enabled";
@@ -155,6 +157,24 @@ public class PixelGramSettings {
     public static final int DEFAULT_RESOLUTION = 640;
     public static final int DEFAULT_VIDEO_BITRATE = 1_000_000;
     public static final int DEFAULT_AUDIO_BITRATE = 96_000;
+
+    /** Opus encoder application mode for voice-message recording (audio.c/initRecorder) - values
+     * match libopus's own OPUS_APPLICATION_VOIP/OPUS_APPLICATION_AUDIO constants directly (2048/
+     * 2049), passed straight through the JNI boundary with no translation layer. AUDIO is the
+     * default: VOIP tunes for packet-loss robustness and very low bitrates aimed at real-time
+     * transmission, neither of which apply to a locally-recorded-then-uploaded file with no
+     * real-time constraint - AUDIO targets higher fidelity at a given bitrate instead, which is
+     * what actually matters here. See FINDINGS.md's Opus encoder configuration section. */
+    public static final int OPUS_APPLICATION_VOIP = 2048;
+    public static final int OPUS_APPLICATION_AUDIO = 2049;
+    public static final int DEFAULT_OPUS_APPLICATION = OPUS_APPLICATION_AUDIO;
+
+    /** Explicit VBR bitrate target (bps) for the Opus voice-message encoder, replacing the
+     * previous OPUS_BITRATE_MAX (i.e. "use whatever ceiling the encoder's own default picks,"
+     * which for Opus at 48kHz mono/VOIP application lands far above what speech actually needs -
+     * see FINDINGS.md for the measured file-size comparison). */
+    public static final int[] OPUS_BITRATE_VALUES = {16000, 24000, 32000, 48000, 64000};
+    public static final int DEFAULT_OPUS_BITRATE = 32000;
     public static final boolean DEFAULT_DEBUG_LOGGING = false;
     // Set from the controlled matrix measurement on the Pixel 11 Pro (see FINDINGS.md's
     // "Audio matrix measurement" and "Voice isolation measurement" sections). AGC defaults off
@@ -261,6 +281,22 @@ public class PixelGramSettings {
 
     public static void setAudioBitrate(int bitrate) {
         prefs().edit().putInt(KEY_AUDIO_BITRATE, bitrate).apply();
+    }
+
+    public static int getOpusApplicationMode() {
+        return prefs().getInt(KEY_OPUS_APPLICATION, DEFAULT_OPUS_APPLICATION);
+    }
+
+    public static void setOpusApplicationMode(int mode) {
+        prefs().edit().putInt(KEY_OPUS_APPLICATION, mode).apply();
+    }
+
+    public static int getOpusBitrate() {
+        return prefs().getInt(KEY_OPUS_BITRATE, DEFAULT_OPUS_BITRATE);
+    }
+
+    public static void setOpusBitrate(int bitrate) {
+        prefs().edit().putInt(KEY_OPUS_BITRATE, bitrate).apply();
     }
 
     public static boolean isDebugLoggingEnabled() {
@@ -588,6 +624,8 @@ public class PixelGramSettings {
                 .putInt(KEY_RESOLUTION, DEFAULT_RESOLUTION)
                 .putInt(KEY_VIDEO_BITRATE, DEFAULT_VIDEO_BITRATE)
                 .putInt(KEY_AUDIO_BITRATE, DEFAULT_AUDIO_BITRATE)
+                .putInt(KEY_OPUS_APPLICATION, DEFAULT_OPUS_APPLICATION)
+                .putInt(KEY_OPUS_BITRATE, DEFAULT_OPUS_BITRATE)
                 .putBoolean(KEY_DEBUG_LOGGING, DEFAULT_DEBUG_LOGGING)
                 .putInt(KEY_VOICE_ENHANCEMENT, DEFAULT_VOICE_ENHANCEMENT)
                 .putBoolean(KEY_NOISE_SUPPRESSION, DEFAULT_NOISE_SUPPRESSION)
