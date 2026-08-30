@@ -680,12 +680,13 @@ touches (buffer duration accounting, the RMS amplitude meter, encoder buffer siz
 bytes-per-sample-aware rather than hardcoding 2. Added `audioCapture:float`/`pcm16` to the
 recording marker line.
 
-**Not applied to voice messages.** `VoiceIsolationProcessor`/`applyMicGain` are shared with
-`MediaController`'s separate voice-message recorder, which also captures 16-bit PCM at 48kHz mono
-- but that path feeds a native JNI Opus encoder and drives the waveform-preview UI, both deep,
+**Not applied to voice messages initially.** `VoiceIsolationProcessor`/`applyMicGain` are shared
+with `MediaController`'s separate voice-message recorder, which also captures 16-bit PCM at 48kHz
+mono - but that path feeds a native JNI Opus encoder and drives the waveform-preview UI, both deep,
 heavily-used stock Telegram code unrelated to anything this fork added. Left it on the existing
-int16 `process()`/`applyMicGain()` methods; the new float-native overloads are available if that
-path is converted later.
+int16 `process()`/`applyMicGain()` methods at first; the new float-native overloads were added so
+that path could be converted later. **Superseded same day** - it was converted; see "Voice-message
+recording converted to float, all the way to Opus" below.
 
 **Verified with a real recording**, not just a clean compile: marker line confirmed
 `audioCapture:float` was actually active, and the resulting file decodes cleanly (`ffmpeg -f null`,
@@ -693,6 +694,33 @@ zero errors), 48kHz mono as expected, sample values well within range (-11701..1
 zero near-full-scale samples - no clipping or garbage), DC offset ~0, peak/RMS levels sane
 (-7.9dBFS peak, -25.5dBFS RMS). No sign of the corruption a float/int16 byte-count mismatch would
 have produced.
+
+## Voice-message recording converted to float, all the way to Opus (2026-08-30)
+
+Round video's float-capture switch above deliberately left `MediaController`'s voice-message
+recorder alone, since it feeds a native JNI Opus/Ogg encoder rather than MediaCodec. Converted it
+too, and it comes out better than the round-video case: **Opus accepts float samples natively**
+(`opus_encode_float()`, part of the vendored libopus's public API - confirmed present in
+`third_party/xiph/opus/include/opus.h`), so this path needed no int16 quantization step at all,
+unlike round video's AAC encoder which forces one regardless of capture format.
+
+**Native change**: `audio.c`'s `writeFrame()` (int16, calls `opus_encode()`) had its Ogg-muxing
+logic (post-`opus_encode`, packet/page bookkeeping) factored into a shared `muxOggFrame()` helper,
+then a new `writeFrameFloat()` sibling added that calls `opus_encode_float()` on the same
+`_encoder`/`_packet`/`ogg_stream_state` and delegates to the same `muxOggFrame()` - the two are
+never called concurrently (one recording session at a time, same as the rest of this file's global
+state). New `Java_..._MediaController_writeFrameFloat` JNI export; confirmed both symbols present
+and linked via `nm -D` on the rebuilt `.so`.
+
+**Java side**: `MediaController` gained the same `createAudioRecorder()` float-first/int16-fallback
+pattern as `InstantCameraView`, using the float-native `processFloat()`/`applyMicGainFloat()`
+overloads added for round video. One extra subtlety specific to this path: `fileBuffer` (the
+per-Opus-frame accumulator) was a fixed 1920 bytes = exactly `frame_size` (960 samples) * 2 bytes.
+`writeFrame`/`writeFrameFloat` silently zero-pad any buffer shorter than `frame_size`, which is
+only correct for the genuine final partial frame at end-of-recording - if `fileBuffer` weren't
+resized to `960 * audioBytesPerSample` for float (3840 bytes), it would fill at half a frame every
+time in float mode, and every non-final flush would get zero-padded mid-recording, splicing
+silence into the audio. Now reallocated per-recording, sized to the actual chosen format.
 
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4

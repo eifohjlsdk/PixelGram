@@ -434,47 +434,15 @@ int initRecorder(const char *path, opus_int32 sampleRate) {
     return 1;
 }
 
-int writeFrame(uint8_t *framePcmBytes, uint32_t frameByteCount, int end) {
-    size_t cur_frame_size = frame_size;
-    _packetId++;
-    
-    opus_int32 nb_samples = frameByteCount / 2;
-    total_samples += nb_samples;
-    op.e_o_s = end;
-    
-    int nbBytes = 0;
-    
-    if (nb_samples != 0) {
-        uint8_t *paddedFrameBytes = framePcmBytes;
-        int freePaddedFrameBytes = 0;
-
-        if (nb_samples < cur_frame_size) {
-            paddedFrameBytes = malloc(cur_frame_size * 2);
-            freePaddedFrameBytes = 1;
-            memcpy(paddedFrameBytes, framePcmBytes, frameByteCount);
-            memset(paddedFrameBytes + nb_samples * 2, 0, cur_frame_size * 2 - nb_samples * 2);
-        }
-        
-        nbBytes = opus_encode(_encoder, (opus_int16 *)paddedFrameBytes, cur_frame_size, _packet, max_frame_bytes / 10);
-        if (freePaddedFrameBytes) {
-            free(paddedFrameBytes);
-        }
-        
-        if (nbBytes < 0) {
-            LOGE("Encoding failed: %s. Aborting.", opus_strerror(nbBytes));
-            return 0;
-        }
-        
-        enc_granulepos += cur_frame_size * 48000 / coding_rate;
-        size_segments = (nbBytes + 255) / 255;
-        min_bytes = MIN(nbBytes, min_bytes);
-    }
-    
+// Ogg muxing shared by writeFrame()/writeFrameFloat() below - identical regardless of which
+// opus_encode variant produced nbBytes, since it only deals with the encoded packet and
+// granule-position bookkeeping, never the PCM sample format.
+static int muxOggFrame(int nbBytes, int end) {
     while ((((size_segments <= 255) && (last_segments + size_segments > 255)) || (enc_granulepos - last_granulepos > max_ogg_delay)) && ogg_stream_flush_fill(&os, &og, 255 * 255)) {
         if (ogg_page_packets(&og) != 0) {
             last_granulepos = ogg_page_granulepos(&og);
         }
-        
+
         last_segments -= og.header[26];
         int writtenPageBytes = writeOggPage(&og, _fileOs);
         if (writtenPageBytes != og.header_len + og.body_len) {
@@ -484,7 +452,7 @@ int writeFrame(uint8_t *framePcmBytes, uint32_t frameByteCount, int end) {
         bytes_written += writtenPageBytes;
         pages_out++;
     }
-    
+
     op.packet = _packet;
     op.bytes = nbBytes;
     op.b_o_s = 0;
@@ -495,7 +463,7 @@ int writeFrame(uint8_t *framePcmBytes, uint32_t frameByteCount, int end) {
     op.packetno = 2 + _packetId;
     ogg_stream_packetin(&os, &op);
     last_segments += size_segments;
-    
+
     while ((op.e_o_s || (enc_granulepos + (frame_size * 48000 / coding_rate) - last_granulepos > max_ogg_delay) || (last_segments >= 255)) ? ogg_stream_flush_fill(&os, &og, 255 * 255) : ogg_stream_pageout_fill(&os, &og, 255 * 255)) {
         if (ogg_page_packets(&og) != 0) {
             last_granulepos = ogg_page_granulepos(&og);
@@ -509,8 +477,94 @@ int writeFrame(uint8_t *framePcmBytes, uint32_t frameByteCount, int end) {
         bytes_written += writtenPageBytes;
         pages_out++;
     }
-    
+
     return 1;
+}
+
+int writeFrame(uint8_t *framePcmBytes, uint32_t frameByteCount, int end) {
+    size_t cur_frame_size = frame_size;
+    _packetId++;
+
+    opus_int32 nb_samples = frameByteCount / 2;
+    total_samples += nb_samples;
+    op.e_o_s = end;
+
+    int nbBytes = 0;
+
+    if (nb_samples != 0) {
+        uint8_t *paddedFrameBytes = framePcmBytes;
+        int freePaddedFrameBytes = 0;
+
+        if (nb_samples < cur_frame_size) {
+            paddedFrameBytes = malloc(cur_frame_size * 2);
+            freePaddedFrameBytes = 1;
+            memcpy(paddedFrameBytes, framePcmBytes, frameByteCount);
+            memset(paddedFrameBytes + nb_samples * 2, 0, cur_frame_size * 2 - nb_samples * 2);
+        }
+
+        nbBytes = opus_encode(_encoder, (opus_int16 *)paddedFrameBytes, cur_frame_size, _packet, max_frame_bytes / 10);
+        if (freePaddedFrameBytes) {
+            free(paddedFrameBytes);
+        }
+
+        if (nbBytes < 0) {
+            LOGE("Encoding failed: %s. Aborting.", opus_strerror(nbBytes));
+            return 0;
+        }
+
+        enc_granulepos += cur_frame_size * 48000 / coding_rate;
+        size_segments = (nbBytes + 255) / 255;
+        min_bytes = MIN(nbBytes, min_bytes);
+    }
+
+    return muxOggFrame(nbBytes, end);
+}
+
+// Float counterpart to writeFrame() above - used only by MediaController's live recording
+// path when it captures ENCODING_PCM_FLOAT (see FINDINGS.md's audio investigation).
+// opus_encode_float() takes the exact same encoder handle as opus_encode(), just float
+// samples normalized to [-1, 1] instead of int16, so this shares every bit of
+// _encoder/_packet/ogg-muxing state with writeFrame() via muxOggFrame() - the two are never
+// called concurrently, matching the rest of this file's single-recording-at-a-time global
+// state. frameSampleCount is a sample count (not a byte count, unlike writeFrame's
+// frameByteCount), since float samples are 4 bytes and byte-count-halved-by-2 would be wrong.
+int writeFrameFloat(float *framePcmFloats, uint32_t frameSampleCount, int end) {
+    size_t cur_frame_size = frame_size;
+    _packetId++;
+
+    opus_int32 nb_samples = frameSampleCount;
+    total_samples += nb_samples;
+    op.e_o_s = end;
+
+    int nbBytes = 0;
+
+    if (nb_samples != 0) {
+        float *paddedFrameFloats = framePcmFloats;
+        int freePaddedFrameFloats = 0;
+
+        if (nb_samples < cur_frame_size) {
+            paddedFrameFloats = malloc(cur_frame_size * sizeof(float));
+            freePaddedFrameFloats = 1;
+            memcpy(paddedFrameFloats, framePcmFloats, frameSampleCount * sizeof(float));
+            memset(paddedFrameFloats + nb_samples, 0, (cur_frame_size - nb_samples) * sizeof(float));
+        }
+
+        nbBytes = opus_encode_float(_encoder, paddedFrameFloats, cur_frame_size, _packet, max_frame_bytes / 10);
+        if (freePaddedFrameFloats) {
+            free(paddedFrameFloats);
+        }
+
+        if (nbBytes < 0) {
+            LOGE("Encoding failed: %s. Aborting.", opus_strerror(nbBytes));
+            return 0;
+        }
+
+        enc_granulepos += cur_frame_size * 48000 / coding_rate;
+        size_segments = (nbBytes + 255) / 255;
+        min_bytes = MIN(nbBytes, min_bytes);
+    }
+
+    return muxOggFrame(nbBytes, end);
 }
 
 JNIEXPORT jint Java_org_telegram_messenger_MediaController_startRecord(JNIEnv *env, jclass class, jstring path, jint sampleRate) {
@@ -528,6 +582,12 @@ JNIEXPORT jint Java_org_telegram_messenger_MediaController_startRecord(JNIEnv *e
 JNIEXPORT jint Java_org_telegram_messenger_MediaController_writeFrame(JNIEnv *env, jclass class, jobject frame, jint len) {
     jbyte *frameBytes = (*env)->GetDirectBufferAddress(env, frame);
     return writeFrame((uint8_t *) frameBytes, (uint32_t) len, len / 2 < frame_size);
+}
+
+JNIEXPORT jint Java_org_telegram_messenger_MediaController_writeFrameFloat(JNIEnv *env, jclass class, jobject frame, jint len) {
+    jbyte *frameBytes = (*env)->GetDirectBufferAddress(env, frame);
+    uint32_t sampleCount = (uint32_t) len / 4;
+    return writeFrameFloat((float *) frameBytes, sampleCount, sampleCount < frame_size);
 }
 
 JNIEXPORT void Java_org_telegram_messenger_MediaController_stopRecord(JNIEnv *env, jclass class) {

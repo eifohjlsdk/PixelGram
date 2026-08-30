@@ -86,6 +86,7 @@ import com.google.android.gms.cast.MediaMetadata;
 import com.google.android.gms.common.images.WebImage;
 
 import org.telegram.messenger.audioinfo.AudioInfo;
+import org.telegram.messenger.camera.PixelCameraLog;
 import org.telegram.messenger.camera.PixelGramSettings;
 import org.telegram.messenger.chromecast.ChromecastController;
 import org.telegram.messenger.chromecast.ChromecastFileServer;
@@ -142,6 +143,11 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     private native int startRecord(String path, int sampleRate);
 
     private native int writeFrame(ByteBuffer frame, int len);
+
+    // opus_encode_float() counterpart to writeFrame() above - takes the same encoder/muxer
+    // state, just float samples (normalized to [-1, 1]) instead of int16. len is a byte count
+    // like writeFrame's, not a sample count - see audio.c's JNI wrapper for the /4 conversion.
+    private native int writeFrameFloat(ByteBuffer frame, int len);
 
     private native void stopRecord();
 
@@ -1082,6 +1088,18 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     private NoiseSuppressor audioNoiseSuppressor;
     private AutomaticGainControl audioAutomaticGainControl;
     private AcousticEchoCanceler audioEchoCanceler;
+    // Set by createAudioRecorder() based on which encoding AudioRecord actually accepted - see
+    // InstantCameraView's identical fields/comment for why float isn't assumed even though
+    // it's confirmed available on the dev device (FINDINGS.md's audio investigation).
+    private boolean audioCaptureIsFloat;
+    private int audioBytesPerSample;
+    // Must match audio.c's frame_size constant exactly. fileBuffer accumulates exactly one
+    // Opus frame's worth of samples before each writeFrame(Float) call - writeFrame silently
+    // zero-pads any buffer smaller than this, which is only correct for the genuine final
+    // partial frame at end-of-recording. If fileBuffer's byte capacity didn't scale with
+    // audioBytesPerSample, a float recording would fill it at half this many samples and every
+    // non-final flush would get zero-padded mid-recording, splicing silence into the audio.
+    private static final int OPUS_FRAME_SIZE_SAMPLES = 960;
     public TLRPC.TL_document recordingAudio;
     private int recordingGuid = -1;
     private int recordingCurrentAccount;
@@ -1132,13 +1150,20 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 int len = audioRecorder.read(buffer, buffer.capacity());
                 if (len > 0) {
                     buffer.limit(len);
-                    if (voiceIsolationProcessor != null) {
-                        voiceIsolationProcessor.process(buffer, len);
+                    if (audioCaptureIsFloat) {
+                        if (voiceIsolationProcessor != null) {
+                            voiceIsolationProcessor.processFloat(buffer, len);
+                        }
+                        PixelGramSettings.applyMicGainFloat(buffer, len);
+                    } else {
+                        if (voiceIsolationProcessor != null) {
+                            voiceIsolationProcessor.process(buffer, len);
+                        }
+                        PixelGramSettings.applyMicGain(buffer, len);
                     }
-                    PixelGramSettings.applyMicGain(buffer, len);
                     double sum = 0;
                     try {
-                        long newSamplesCount = samplesCount + len / 2;
+                        long newSamplesCount = samplesCount + len / audioBytesPerSample;
                         int currentPart = (int) (((double) samplesCount / (double) newSamplesCount) * recordSamples.length);
                         int newPart = recordSamples.length - currentPart;
                         float sampleStep;
@@ -1152,9 +1177,15 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         }
                         int currentNum = currentPart;
                         float nextNum = 0;
-                        sampleStep = (float) len / 2 / (float) newPart;
-                        for (int i = 0; i < len / 2; i++) {
-                            short peak = buffer.getShort();
+                        sampleStep = (float) len / audioBytesPerSample / (float) newPart;
+                        int sampleCount = len / audioBytesPerSample;
+                        for (int i = 0; i < sampleCount; i++) {
+                            // peak stays short-domain regardless of capture format - recordSamples
+                            // is a short[] consumed by the waveform-preview UI and native
+                            // getWaveform2(), so a float sample is rescaled by 32768 to the same
+                            // magnitude a 16-bit capture would have produced, same as the
+                            // round-video RMS meter's identical rescale.
+                            short peak = audioCaptureIsFloat ? (short) Math.round(buffer.getFloat() * 32768f) : buffer.getShort();
                             if (Build.VERSION.SDK_INT < 21) {
                                 if (peak > 2500) {
                                     sum += peak * peak;
@@ -1173,9 +1204,11 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         FileLog.e(e);
                     }
                     buffer.position(0);
-                    final double amplitude = Math.sqrt(sum / len / 2);
+                    final double amplitude = Math.sqrt(sum / len / audioBytesPerSample);
                     final ByteBuffer finalBuffer = buffer;
                     final boolean flush = len != buffer.capacity();
+                    final boolean captureIsFloat = audioCaptureIsFloat;
+                    final int bytesPerSample = audioBytesPerSample;
                     fileEncodingQueue.postRunnable(() -> {
                         while (finalBuffer.hasRemaining()) {
                             int oldLimit = -1;
@@ -1185,9 +1218,12 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                             }
                             fileBuffer.put(finalBuffer);
                             if (fileBuffer.position() == fileBuffer.limit() || flush) {
-                                if (writeFrame(fileBuffer, !flush ? fileBuffer.limit() : finalBuffer.position()) != 0) {
+                                int frameResult = captureIsFloat
+                                        ? writeFrameFloat(fileBuffer, !flush ? fileBuffer.limit() : finalBuffer.position())
+                                        : writeFrame(fileBuffer, !flush ? fileBuffer.limit() : finalBuffer.position());
+                                if (frameResult != 0) {
                                     fileBuffer.rewind();
-                                    recordTimeCount += fileBuffer.limit() / 2 / (sampleRate / 1000);
+                                    recordTimeCount += fileBuffer.limit() / bytesPerSample / (sampleRate / 1000);
                                     writtenFrame++;
                                 } else {
                                     FileLog.e("writing frame failed");
@@ -4472,6 +4508,36 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
     }
 
+    /** Constructs audioRecorder preferring ENCODING_PCM_FLOAT, falling back to PCM_16BIT if
+     * construction doesn't actually report STATE_INITIALIZED (float isn't guaranteed for the
+     * record direction the way it is for playback) - same approach as InstantCameraView's
+     * round-video recorder. Also (re)allocates fileBuffer sized to exactly one Opus frame in
+     * whichever format was chosen - see OPUS_FRAME_SIZE_SAMPLES's comment for why that sizing
+     * matters. Sets audioCaptureIsFloat/audioBytesPerSample as a side effect. */
+    private AudioRecord createAudioRecorder() {
+        int probeEncoding = AudioFormat.ENCODING_PCM_FLOAT;
+        int floatMinBuf = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, probeEncoding);
+        if (floatMinBuf <= 0) floatMinBuf = recordBufferSize * 2;
+        AudioRecord recorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, probeEncoding, Math.max(floatMinBuf, recordBufferSize) * 2);
+        if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+            // Logged via PixelCameraLog (tag "PixelCamera"), not FileLog - FileLog's "tmessages"
+            // tag is extremely high-volume (every UI action writes through it), which evicts a
+            // one-off line from the logcat ring buffer almost immediately. PixelCameraLog is the
+            // same low-volume, easily-filtered tag the round-video recording marker already uses.
+            PixelCameraLog.w("AudioRecord rejected ENCODING_PCM_FLOAT for voice message, falling back to PCM_16BIT");
+            recorder.release();
+            recorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+            audioCaptureIsFloat = false;
+        } else {
+            audioCaptureIsFloat = true;
+        }
+        audioBytesPerSample = audioCaptureIsFloat ? 4 : 2;
+        fileBuffer = ByteBuffer.allocateDirect(OPUS_FRAME_SIZE_SAMPLES * audioBytesPerSample);
+        fileBuffer.order(ByteOrder.nativeOrder());
+        PixelCameraLog.d("voice message audio capture format: " + (audioCaptureIsFloat ? "PCM_FLOAT" : "PCM_16BIT (fallback)"));
+        return recorder;
+    }
+
     /** Attaches NoiseSuppressor/AutomaticGainControl/AcousticEchoCanceler to the just-constructed
      * audioRecorder's session, each independently gated on its own PixelGramSettings on/off
      * setting and isAvailable() check - same pattern as InstantCameraView's round-video
@@ -4797,7 +4863,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         requestRecordAudioFocus(true);
 //                        MediaDataController.getInstance(recordingCurrentAccount).pushDraftVoiceMessage(recordDialogId, recordTopicId, null);
 //
-                        audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                        audioRecorder = createAudioRecorder();
                         voiceIsolationProcessor = new org.telegram.messenger.camera.VoiceIsolationProcessor(sampleRate);
                         attachAudioEffects();
                         applyMicPreferences();
@@ -4877,7 +4943,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 }
 
                 audioRecorderPaused = false;
-                audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                audioRecorder = createAudioRecorder();
                 voiceIsolationProcessor = new org.telegram.messenger.camera.VoiceIsolationProcessor(sampleRate);
                 attachAudioEffects();
                 applyMicPreferences();
