@@ -545,6 +545,18 @@ real per-frame manual control that's not available under LIMITED:
   grounds, not availability grounds.
 - Not yet implemented; noted here as newly-confirmed-available, not yet acted on.
 
+## AVC profile/level pinned explicitly on the round-video encoder (2026-08-30)
+
+`KEY_PROFILE` set to `AVCProfileHigh`, `KEY_LEVEL` to `AVCLevel31`. This device's encoder already
+resolves to exactly that by default (confirmed by reading back `getOutputFormat()` at
+640x640/1.2Mbps: `profile=8 level=512`), but plenty of Android hardware encoders default to
+Baseline profile unless told otherwise, silently losing CABAC and B-frames for meaningfully worse
+compression at the same bitrate - pinning removes the dependency on a given device's own default.
+Level 3.1's frame-size limit (3600 macroblocks = 921,600px) covers every resolution this app
+currently offers with margin, except 960x960 which lands exactly at that limit (60x60 macroblocks
+= 3600 exactly) - technically in spec but with zero headroom, worth keeping in mind if 960 survives
+the ongoing resolution-ceiling bracketing above.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

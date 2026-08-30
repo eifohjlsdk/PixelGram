@@ -3709,6 +3709,15 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 format.setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate);
                 format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
                 format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL);
+                // Pinned rather than left to the encoder's own default - on this device the
+                // default already resolves to exactly this (confirmed by reading back
+                // getOutputFormat() at 640x640/1.2Mbps: profile=8/AVCProfileHigh,
+                // level=512/AVCLevel31), but plenty of Android encoders default to Baseline
+                // profile unless told otherwise, which loses CABAC and B-frames for meaningfully
+                // worse compression at the same bitrate. Level 3.1 comfortably covers every
+                // resolution this app currently offers (up to 960x960).
+                format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh);
+                format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31);
 
                 videoEncoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                 surface = videoEncoder.createInputSurface();
