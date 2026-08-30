@@ -99,7 +99,6 @@ public class PixelGramSettings {
     private static final String KEY_GATE_THRESHOLD_DB = "voice_isolation_gate_threshold_db";
     private static final String KEY_DOWNSCALE_FILTER = "downscale_filter_mode";
     private static final String KEY_DITHER_AMOUNT_LSB = "dither_amount_lsb";
-    private static final String KEY_EXPOSURE_CAP_ENABLED = "exposure_cap_enabled";
 
     // NR/edge/exposure-comp/face-AE-metering defaults below were tuned back when the ISP did the
     // entire resolution reduction with no oversampling margin at all (see FINDINGS.md's original
@@ -151,13 +150,6 @@ public class PixelGramSettings {
     // change until this is explicitly adjusted.
     public static final float[] DITHER_AMOUNT_LSB_VALUES = {0f, 0.5f, 1f, 2f};
     public static final float DEFAULT_DITHER_AMOUNT_LSB = 1f;
-    // Off until tested: caps exposure time by requesting a fixed 60fps AE target range instead of
-    // 30fps (halving the frame-duration ceiling AE's own exposure-time selection can't exceed,
-    // from ~33.3ms to ~16.7ms - see FINDINGS.md's exposure-cap investigation), decimating 2:1 back
-    // to a genuine 30fps encoder input. Only matters in dim light (where AE would otherwise ride
-    // exposure toward that ceiling) and costs extra sensor/ISP power the rest of the time, hence
-    // opt-in rather than always on.
-    public static final boolean DEFAULT_EXPOSURE_CAP_ENABLED = false;
 
     private static SharedPreferences prefs() {
         return ApplicationLoader.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -427,14 +419,6 @@ public class PixelGramSettings {
         prefs().edit().putFloat(KEY_DITHER_AMOUNT_LSB, lsb).apply();
     }
 
-    public static boolean isExposureCapEnabled() {
-        return prefs().getBoolean(KEY_EXPOSURE_CAP_ENABLED, DEFAULT_EXPOSURE_CAP_ENABLED);
-    }
-
-    public static void setExposureCapEnabled(boolean enabled) {
-        prefs().edit().putBoolean(KEY_EXPOSURE_CAP_ENABLED, enabled).apply();
-    }
-
     private static Boolean micDirectionSupportedCache;
     private static Boolean micFieldDimensionSupportedCache;
 
@@ -523,7 +507,6 @@ public class PixelGramSettings {
                 .putFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB)
                 .putInt(KEY_DOWNSCALE_FILTER, DEFAULT_DOWNSCALE_FILTER)
                 .putFloat(KEY_DITHER_AMOUNT_LSB, DEFAULT_DITHER_AMOUNT_LSB)
-                .putBoolean(KEY_EXPOSURE_CAP_ENABLED, DEFAULT_EXPOSURE_CAP_ENABLED)
                 .apply();
     }
 }

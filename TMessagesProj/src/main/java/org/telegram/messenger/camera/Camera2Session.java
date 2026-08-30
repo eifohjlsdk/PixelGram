@@ -96,7 +96,6 @@ public class Camera2Session {
     private long lastFaceLogTimeMs;
     private long lastAeRegionsLogTimeMs;
     private long lastZoomCropLogTimeMs;
-    private long lastExposureLogTimeMs;
 
     private final Size previewSize;
 
@@ -217,7 +216,6 @@ public class Camera2Session {
             @Override
             public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {
                 logZoomCropReadback(result);
-                logExposure(result);
                 onFaceDetectionResult(result);
             }
         };
@@ -233,7 +231,7 @@ public class Camera2Session {
             sensorSize = cameraCharacteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
             final Float value = cameraCharacteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
             maxZoom = (value == null || value < 1f) ? 1f : value;
-            targetFpsRange = pickTargetFpsRange(cameraCharacteristics, cameraId, isFront, PixelGramSettings.isExposureCapEnabled() ? 60 : 30);
+            targetFpsRange = pickTargetFpsRange(cameraCharacteristics, cameraId, isFront);
             afContinuousVideoSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO, "CONTROL_AF_MODE_CONTINUOUS_VIDEO");
             videoStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON, "CONTROL_VIDEO_STABILIZATION_MODE_ON");
             opticalStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON, "LENS_OPTICAL_STABILIZATION_MODE_ON");
@@ -257,11 +255,7 @@ public class Camera2Session {
         }
     }
 
-    // targetFps is normally 30 (matching the video encoder's own KEY_FRAME_RATE); when the
-    // exposure cap setting is on, the caller passes 60 instead, purely to halve the frame-duration
-    // ceiling AE's own exposure-time selection can't exceed - the actual 30fps encoder output is
-    // preserved by decimating 2:1 in VideoRecorder.frameAvailable(), not by changing this target.
-    private static Range<Integer> pickTargetFpsRange(CameraCharacteristics characteristics, String cameraId, boolean front, int targetFps) {
+    private static Range<Integer> pickTargetFpsRange(CameraCharacteristics characteristics, String cameraId, boolean front) {
         Range<Integer>[] ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
         if (ranges == null || ranges.length == 0) {
             return null;
@@ -269,7 +263,7 @@ public class Camera2Session {
 
         Range<Integer> chosen = null;
         for (Range<Integer> range : ranges) {
-            if (range.getLower() == targetFps && range.getUpper() == targetFps) {
+            if (range.getLower() == 30 && range.getUpper() == 30) {
                 chosen = range;
                 break;
             }
@@ -277,7 +271,7 @@ public class Camera2Session {
         if (chosen == null) {
             int bestWidth = Integer.MAX_VALUE;
             for (Range<Integer> range : ranges) {
-                if (range.getLower() <= targetFps && range.getUpper() >= targetFps) {
+                if (range.getLower() <= 30 && range.getUpper() >= 30) {
                     int width = range.getUpper() - range.getLower();
                     if (width < bestWidth) {
                         bestWidth = width;
@@ -479,22 +473,6 @@ public class Camera2Session {
         PixelCameraLog.d("camera #" + cameraId + ": requested zoomRatio=" + currentZoom + " cropRegion=" + cropRegion
                 + " | HAL-applied zoomRatio=" + appliedZoomRatio + " cropRegion=" + appliedCrop
                 + " | sensorSize=" + sensorSize);
-    }
-
-    // Reports what AE is actually choosing, so the exposure-cap setting's effect (or lack of one
-    // in normal lighting, where AE may never approach the frame-duration ceiling at all) can be
-    // seen directly rather than assumed from the requested fps range alone.
-    private void logExposure(CaptureResult result) {
-        if (!PixelGramSettings.isDebugLoggingEnabled()) return;
-        long now = System.currentTimeMillis();
-        if (now - lastExposureLogTimeMs < 1000) return;
-        lastExposureLogTimeMs = now;
-        Long exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-        Integer sensitivity = result.get(CaptureResult.SENSOR_SENSITIVITY);
-        PixelCameraLog.d("camera #" + cameraId + ": exposureCap=" + PixelGramSettings.isExposureCapEnabled()
-                + " targetFpsRange=" + targetFpsRange
-                + " SENSOR_EXPOSURE_TIME=" + (exposureTimeNs != null ? (exposureTimeNs / 1_000_000.0) + "ms" : "null")
-                + " SENSOR_SENSITIVITY=" + sensitivity);
     }
 
     private void onFaceDetectionResult(CaptureResult result) {

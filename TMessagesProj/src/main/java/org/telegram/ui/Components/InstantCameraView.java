@@ -2524,10 +2524,6 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
 
         private boolean started;
 
-        // Exposure-cap 2:1 frame decimation - see startRecording() and frameAvailable() below.
-        private boolean exposureCapEnabled;
-        private int frameDecimationCounter;
-
         public void startRecording(File outputFile, android.opengl.EGLContext sharedContext) {
             if (started && (handler != null && handler.getLooper() != null && handler.getLooper().getThread() != null && handler.getLooper().getThread().isAlive())) {
                 sharedEglContext = sharedContext;
@@ -2537,13 +2533,6 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             started = true;
             int resolution = PixelGramSettings.getResolution();
             int bitrate = PixelGramSettings.getVideoBitrate();
-            // Cached once per recording, matching resolution/bitrate above - the camera is
-            // already open at 60fps by the time recording starts if this is on (see
-            // Camera2Session's own read of the same setting at camera-open), this just decides
-            // whether frameAvailable() below decimates that 60fps capture down to a genuine 30fps
-            // encoder input.
-            exposureCapEnabled = PixelGramSettings.isExposureCapEnabled();
-            frameDecimationCounter = 0;
             AndroidUtilities.runOnUIThread(() -> {
                 NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.stopAllHeavyOperations, 512);
             });
@@ -2624,21 +2613,6 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 zeroTimeStamps = 0;
             }
             prevTimestamp = timestamp;
-
-            // Exposure cap: the camera is capturing at 60fps (see Camera2Session), but the
-            // encoder must still see a genuine 30fps input - decimating explicitly here, using
-            // the real per-frame hardware timestamp for every frame we do keep, rather than
-            // relying on the encoder to convert a 60fps input while it's configured for 30. Real
-            // 60fps frames arrive ~16.7ms apart, so keeping every other one naturally produces a
-            // uniformly ~33.3ms-spaced sequence - exactly a real 30fps capture would produce -
-            // with no separate retiming needed.
-            if (exposureCapEnabled) {
-                frameDecimationCounter++;
-                if (frameDecimationCounter % 2 == 0) {
-                    return;
-                }
-            }
-
             handler.sendMessage(handler.obtainMessage(MSG_VIDEOFRAME_AVAILABLE, (int) (timestamp >> 32), (int) timestamp, cameraId));
         }
 
@@ -3776,7 +3750,6 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " capture:" + (previewSize[0] != null ? previewSize[0].getWidth() + "x" + previewSize[0].getHeight() : "?")
                             + " supersample:" + shouldSupersampleDownscale(previewSize[0])
                             + " downscaleFilter:" + PixelGramSettings.getDownscaleFilter() + " dither:" + PixelGramSettings.getDitherAmountLsb() + "xLSB"
-                            + " exposureCap:" + exposureCapEnabled
                             + " video:" + videoBitrate + " audio:" + PixelGramSettings.getAudioBitrate()
                             + " nr:" + PixelGramSettings.getNoiseReductionMode() + " edge:" + PixelGramSettings.getEdgeMode()
                             + " tonemap:" + PixelGramSettings.getTonemapMode()

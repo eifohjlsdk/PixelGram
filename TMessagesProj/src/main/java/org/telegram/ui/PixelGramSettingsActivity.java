@@ -77,7 +77,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int tonemapModeRow;
     private int faceAeMeteringRow;
     private int exposureCompensationRow;
-    private int exposureCapRow;
     private int downscaleFilterRow;
     private int ditherAmountRow;
     private int divider2Row;
@@ -143,7 +142,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
         tonemapModeRow = rowCount++;
         faceAeMeteringRow = rowCount++;
         exposureCompensationRow = rowCount++;
-        exposureCapRow = rowCount++;
         downscaleFilterRow = rowCount++;
         ditherAmountRow = rowCount++;
         divider2Row = rowCount++;
@@ -215,9 +213,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 ((TextCheckCell) view).setChecked(PixelGramSettings.isFaceAeMeteringEnabled());
             } else if (position == exposureCompensationRow) {
                 showExposureCompensationDialog();
-            } else if (position == exposureCapRow) {
-                PixelGramSettings.setExposureCapEnabled(!PixelGramSettings.isExposureCapEnabled());
-                ((TextCheckCell) view).setChecked(PixelGramSettings.isExposureCapEnabled());
             } else if (position == downscaleFilterRow) {
                 showDownscaleFilterDialog();
             } else if (position == ditherAmountRow) {
@@ -718,7 +713,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || pos == resolutionRow || pos == videoBitrateRow || pos == audioBitrateRow
                     || pos == debugLoggingRow
                     || pos == noiseReductionRow || pos == edgeModeRow || pos == tonemapModeRow || pos == faceAeMeteringRow || pos == exposureCompensationRow
-                    || pos == exposureCapRow
                     || pos == downscaleFilterRow || pos == ditherAmountRow
                     || pos == voiceEnhancementRow
                     || (pos == noiseSuppressionRow && NoiseSuppressor.isAvailable())
@@ -841,8 +835,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndCheck("Debug Logging", PixelGramSettings.isDebugLoggingEnabled(), false);
                     } else if (position == faceAeMeteringRow) {
                         cell.setTextAndCheck("Face-Weighted AE Metering", PixelGramSettings.isFaceAeMeteringEnabled(), true);
-                    } else if (position == exposureCapRow) {
-                        cell.setTextAndCheck("Exposure Cap (60fps capture)", PixelGramSettings.isExposureCapEnabled(), true);
                     } else if (position == noiseSuppressionRow) {
                         boolean available = NoiseSuppressor.isAvailable();
                         cell.setTextAndCheck("Noise Suppression" + (available ? "" : " (unavailable)"), PixelGramSettings.isNoiseSuppressionEnabled(), true);
@@ -876,7 +868,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 return TYPE_SHADOW;
             } else if (position == headerCredentialsRow || position == headerRecordingRow || position == headerQualityRow || position == headerAudioRow || position == headerUpdatesRow) {
                 return TYPE_HEADER;
-            } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == exposureCapRow
+            } else if (position == debugLoggingRow || position == faceAeMeteringRow
                     || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow) {
                 return TYPE_CHECK;
             } else if (position == updateInfoRow) {

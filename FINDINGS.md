@@ -557,81 +557,57 @@ currently offers with margin, except 960x960 which lands exactly at that limit (
 = 3600 exactly) - technically in spec but with zero headroom, worth keeping in mind if 960 survives
 the ongoing resolution-ceiling bracketing above.
 
-## Exposure cap investigation and implementation (Path A) (2026-08-30)
+## Exposure cap (Path A): implemented, measured, dropped (2026-08-30)
 
-Investigated capping exposure time in dim light (where AE rides SENSOR_EXPOSURE_TIME toward the
-33.3ms frame budget at 30fps, producing motion blur) now that MANUAL_SENSOR is confirmed available
-(see above). Findings, before implementing:
+Implemented and shipped, then reverted the same day after measurement showed it made output worse,
+not better. Recorded here so the dead end isn't rediscovered.
 
-- **`CONTROL_AE_TARGET_FPS_RANGE` only bounds the ceiling, and we're already at it.** Frame
-  duration can't exceed `1/fps_min`, so AE's own exposure-time choice is already capped at ~33.3ms
-  by the current fixed `[30,30]` range - that's the behavior being complained about, not something
-  the fps range already prevents. `SENSOR_EXPOSURE_TIME` is documented as ignored entirely under
-  `CONTROL_AE_MODE_ON*` - a real, always-effective cap below the current ceiling requires either
-  full manual control (`CONTROL_AE_MODE_OFF`) or lowering the ceiling itself.
-- **AWB/AF are unaffected by AE going manual** - independent state machines in the Camera2 model;
-  `AE_MODE_OFF` + `AWB_MODE_AUTO` + `AF_MODE_CONTINUOUS_VIDEO` is an explicitly valid combination.
-- **No platform-provided brightness signal exists under full manual AE** - only relevant if going
-  fully manual (Path B, not built): would need our own mean-luma feedback loop off actual captured
-  pixels (e.g. reusing `InstantCameraVideoEncoderOverlayHelper`'s existing 48x48 downsample).
-- **Middle path found and used**: request a fixed `[60,60]` `CONTROL_AE_TARGET_FPS_RANGE` instead
-  of `[30,30]` (confirmed available on the front camera:
-  `[[15,15],[15,24],[24,24],[15,30],[24,30],[30,30],[15,60],[60,60]]`) - this halves the
-  frame-duration ceiling to ~16.7ms while AE, AWB, and AF all stay fully automatic, no custom
-  brightness tracking needed. Deliberately used the fixed `[60,60]` rather than the also-available
-  variable `[15,60]`, to avoid reintroducing the free-running variable-frame-rate bug this fork
-  started by fixing.
-- Front camera ranges: `SENSOR_INFO_EXPOSURE_TIME_RANGE` 68,360ns-1,000,000,628ns,
-  `SENSOR_INFO_SENSITIVITY_RANGE` 55-19,692. Proposed cap: 16.7ms (1/60s) - exactly what the
-  `[60,60]` middle path gives for free, well clear of the sensor's 68us floor.
+The `[60,60]` fps-range + 2:1 decimation approach (see prior commit, now reverted) genuinely capped
+`SENSOR_EXPOSURE_TIME` at ~16.3ms in dim light, exactly half the ~32.9ms the uncapped `[30,30]`
+range pinned at. That part worked precisely as designed. The problem: `SENSOR_SENSITIVITY` stayed
+identically at 1231 in both capped and uncapped dim-room clips - AE did not raise gain at all to
+compensate for the halved exposure time, despite the sensor's range going to 19,692 (~16x headroom
+above 1231).
 
-**Implementation**: new `Exposure Cap` setting (off by default - only matters in dim light and
-costs extra sensor/ISP power otherwise). When on, `Camera2Session` requests `[60,60]` instead of
-`[30,30]`; `VideoRecorder.frameAvailable()` explicitly decimates 2:1 using the real per-frame
-hardware timestamp for every kept frame (real 60fps frames arrive ~16.7ms apart, so keeping every
-other one naturally produces a uniformly ~33.3ms-spaced sequence, matching what a genuine 30fps
-capture produces - deliberately not relying on the encoder to convert a 60fps input while
-configured for 30, which is exactly the timestamp mismatch this fork started by fixing). Logs the
-actual `SENSOR_EXPOSURE_TIME`/`SENSOR_SENSITIVITY` from `CaptureResult` once per second so AE's
-real behavior in each mode is directly observable rather than assumed. Included in the recording
-marker line.
+**Quantified**: mean frame luma (`ffprobe`/`signalstats`, gamma-encoded 0-255) was 69.75 for the
+capped clip vs. 96.30 uncapped. Decoded through ~2.2 gamma to linear light, that's a 2.03x ratio -
+almost exactly one stop darker, precisely what halving exposure time with zero sensitivity
+compensation predicts. This is straightforward underexposure, not the intended blur-for-noise
+trade.
 
-### Measured (2026-08-30)
+**Tested whether positive exposure compensation rescues it - it does not.** Set
+`exposure_compensation_ev` to +1.0 (6 steps at this device's 1/6 EV step) while the cap was active
+and re-recorded the same dim room. Logged `CONTROL_AE_STATE` and the applied EV alongside the usual
+exposure/sensitivity readback:
+```
+exposureCap=true targetFpsRange=[60, 60] SENSOR_EXPOSURE_TIME=16.408804ms SENSOR_SENSITIVITY=1231
+CONTROL_AE_STATE=CONVERGED appliedEvSteps=6 (1.0EV)
+```
+`SENSOR_EXPOSURE_TIME` and `SENSOR_SENSITIVITY` are bit-for-bit identical to the 0EV capped test.
+The HAL echoed the +1EV target back as applied and reports `CONVERGED` (not `SEARCHING`) - it isn't
+struggling to reach the target, it simply isn't using the available gain headroom to reach it at
+all while the fps range holds exposure time at its floor. Whatever this device's 3A tuning does to
+decide gain, it's not driven by `CONTROL_AE_EXPOSURE_COMPENSATION` once frame duration is
+fps-range-constrained. Un-chased, since it isn't ours to fix: this is opaque vendor 3A behavior,
+not something reachable through any public Camera2 key.
 
-**AE genuinely never approaches the ceiling in normal room lighting** - a 15s recording with the
-cap off held `SENSOR_EXPOSURE_TIME` at 7-11ms throughout (well under even the *capped* 16.7ms
-ceiling), `SENSOR_SENSITIVITY` 55-208. Confirms the concern this feature addresses doesn't exist in
-normal lighting - the cap would be a genuine no-op there, exactly as expected, and correctly not
-something to worry about outside dim conditions.
+**Decision**: darker output is worse than the motion blur it was meant to trade against for a
+talking-head circle, and the one lever available to fix it (EV compensation) doesn't work. Dropped
+the feature entirely (setting, fps-range-60 request, frame decimation, marker-line field, and
+logging) rather than shipping it off-by-default with a known-broken on state.
 
-**In dim lighting, AE pins at the ceiling for the whole recording**: cap off, same dim room,
-`SENSOR_EXPOSURE_TIME` climbed to 32.3-32.9ms (right at the 33.3ms ceiling) and stayed pinned there
-for all 15s, `SENSOR_SENSITIVITY` fixed at 1231 - the exact motion-blur-risk scenario the cap is
-meant to address, confirmed present and real.
-
-**With the cap on, same dim room**: `targetFpsRange=[60,60]` applied as requested,
-`SENSOR_EXPOSURE_TIME` held at 16.2-16.4ms for the whole recording (right at the ~16.7ms ceiling,
-almost exactly half the uncapped value), `SENSOR_SENSITIVITY` unchanged at 1231. The cap works
-exactly as designed.
-
-**Output fps verified genuinely uniform 30.0fps with the cap on**: per-frame PTS interval
-distributions for capped vs. uncapped 15s dim-room recordings are essentially identical - both
-dominated by ~33.333ms intervals (226/261 and 280/306 frames respectively at exactly 0.033333s,
-the rest within a few microseconds of it, a couple of one-off ~50ms hiccups in each), and
-`nb_frames/duration` computes to ~29.9fps for both. The 2:1 decimation produces output
-indistinguishable in timing quality from native 30fps capture. One cosmetic oddity: ffprobe's
-`r_frame_rate` heuristic reports `60/1` for the capped file despite `avg_frame_rate` and the actual
-per-frame deltas both agreeing on ~29.9-30.0fps - not chased further given the per-frame interval
-evidence is conclusive, but flagged here rather than silently ignored in case it affects some
-player's format detection.
-
-**No measurable thermal or battery difference over a 15s recording**: battery temperature 31.1°C →
-30.9°C (cap off) vs. 31.4°C → 31.4°C (cap on) - within normal noise, and 15s is almost certainly too
-short a window for a real thermal delta to show up regardless of sensor fps. Device was AC-powered
-throughout (charging), which caps how informative a short-clip power comparison can be; a
-longer-duration test on battery power would be needed for a real answer to the power-cost
-question. Not conclusive either way - absence of a measurable difference at 15s isn't evidence of
-absence at longer durations.
+**`r_frame_rate` reported 60 for capped clips - root cause found, not a metadata bug.** The H.264
+SPS's VUI `timing_info_present_flag` is 0 (no VUI timing at all), and the container's own STTS
+table is genuinely ~30fps (3000/3001-tick deltas, 90000 timescale). `ffprobe -v 48` shows its own
+reasoning: it doesn't average sample durations, it looks for the finest grid every delta is an
+integer multiple of, and picks the candidate with lowest total error (`rfps: 60.000000 0.000085`
+beat `rfps: 29.833333 0.019510`). Two frames per capped clip carried ~50ms gaps (4500/4481 ticks) -
+clean multiples of 1500 (60fps) but 1.5x multiples of 3000 (30fps) - and those two outliers were
+enough to tip the guess to 60. Mechanism: kept frames carry real hardware capture timestamps from a
+genuine 60fps source, so any real jitter in that source lands in 1500-tick-sized steps rather than
+3000-tick ones. A real fix, if this feature returns, is snapping each kept frame's output PTS to
+the nearest exact 1/30s grid point rather than passing the raw timestamp through - moot now that
+the feature is reverted, and not implemented.
 
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
