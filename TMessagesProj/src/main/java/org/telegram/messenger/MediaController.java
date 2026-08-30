@@ -1163,12 +1163,12 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         if (voiceIsolationProcessor != null) {
                             voiceIsolationProcessor.processFloat(buffer, len);
                         }
-                        PixelGramSettings.applyMicGainFloat(buffer, len);
+                        PixelGramSettings.applyMicGainFloatVoiceMessage(buffer, len);
                     } else {
                         if (voiceIsolationProcessor != null) {
                             voiceIsolationProcessor.process(buffer, len);
                         }
-                        PixelGramSettings.applyMicGain(buffer, len);
+                        PixelGramSettings.applyMicGainVoiceMessage(buffer, len);
                     }
                     double sum = 0;
                     try {

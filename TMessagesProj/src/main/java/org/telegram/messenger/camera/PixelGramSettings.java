@@ -123,6 +123,9 @@ public class PixelGramSettings {
     private static final String KEY_AGC = "agc_enabled";
     private static final String KEY_ECHO_CANCELLATION = "echo_cancellation_enabled";
     private static final String KEY_MIC_GAIN = "mic_gain_mode";
+    // Separate preference from KEY_MIC_GAIN (round video) - see DEFAULT_MIC_GAIN_VOICE_MESSAGE's
+    // doc for why these need independent defaults rather than sharing one setting.
+    private static final String KEY_MIC_GAIN_VOICE_MESSAGE = "mic_gain_mode_voice_message";
     private static final String KEY_MIC_DIRECTION_MODE = "mic_direction_mode";
     private static final String KEY_MIC_FIELD_DIMENSION = "mic_field_dimension";
     private static final String KEY_VOICE_ISOLATION_MODE = "voice_isolation_mode";
@@ -196,7 +199,20 @@ public class PixelGramSettings {
     public static final boolean DEFAULT_NOISE_SUPPRESSION = true;
     public static final boolean DEFAULT_AGC = false;
     public static final boolean DEFAULT_ECHO_CANCELLATION = true;
-    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_5X;
+    // Round video's own gain, measured directly: the matrix confirmed gain behaves as predicted
+    // (2x -> +6.3dB, 3x -> +9.7dB against theoretical +6.0/+9.5) with the soft limiter catching
+    // anything close to clipping, at 5x peaking -7.7dB with no samples near full scale. Since
+    // then, other work (RNNoise, source switch to MIC/DEFAULT) changed how much gain is actually
+    // needed - see FINDINGS.md's speech enhancement section for why this moved down to 1x rather
+    // than staying at the originally-measured 5x.
+    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_1X;
+    // Separate from round video's own gain (DEFAULT_MIC_GAIN) - voice messages share the exact
+    // same gain+limiter code but were never independently measured. 3x is carried over from round
+    // video's own measured behavior (see DEFAULT_MIC_GAIN's comment) on the assumption the same
+    // multiplier should behave similarly given identical code, NOT from a voice-message-specific
+    // measurement - this is a compensation, not a confirmed fix. See FINDINGS.md for why the two
+    // paths' actual level gap is still unexplained and worth measuring properly.
+    public static final int DEFAULT_MIC_GAIN_VOICE_MESSAGE = MIC_GAIN_3X;
     public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
     public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_BANDPASS_GATE;
@@ -378,7 +394,26 @@ public class PixelGramSettings {
     }
 
     public static float getMicGainMultiplier() {
-        switch (getMicGainMode()) {
+        return micGainMultiplierForMode(getMicGainMode());
+    }
+
+    /** Separate gain setting for voice messages (see KEY_MIC_GAIN_VOICE_MESSAGE's doc) - shares
+     * the round-video setting's MIC_GAIN_* mode constants and the same underlying gain+limiter
+     * code, just with its own default and its own stored preference. */
+    public static int getMicGainModeVoiceMessage() {
+        return prefs().getInt(KEY_MIC_GAIN_VOICE_MESSAGE, DEFAULT_MIC_GAIN_VOICE_MESSAGE);
+    }
+
+    public static void setMicGainModeVoiceMessage(int mode) {
+        prefs().edit().putInt(KEY_MIC_GAIN_VOICE_MESSAGE, mode).apply();
+    }
+
+    public static float getMicGainMultiplierVoiceMessage() {
+        return micGainMultiplierForMode(getMicGainModeVoiceMessage());
+    }
+
+    private static float micGainMultiplierForMode(int mode) {
+        switch (mode) {
             case MIC_GAIN_1_5X:
                 return 1.5f;
             case MIC_GAIN_2X:
@@ -421,16 +456,16 @@ public class PixelGramSettings {
         return sign * compressed;
     }
 
-    /** Multiplies every 16-bit PCM sample in [0, lengthBytes) of buffer by the mic gain
-     * setting, then passes it through the soft limiter above instead of a hard clamp. A final
-     * Short.MIN/MAX_VALUE bounds check stays as a defensive backstop against rounding right at
-     * the asymptote (tanh's output is strictly < 1.0 for any finite input, but rounding a value
-     * close enough to it to an int16 could still land on the boundary) - it's not expected to
-     * actually engage in normal operation the way the old hard clamp did. Uses absolute indexed
-     * get/put so it doesn't disturb the buffer's position/limit. No-op (no per-sample cost)
-     * when gain is 1x. */
-    public static void applyMicGain(java.nio.ByteBuffer buffer, int lengthBytes) {
-        float gain = getMicGainMultiplier();
+    /** Multiplies every 16-bit PCM sample in [0, lengthBytes) of buffer by gain, then passes it
+     * through the soft limiter above instead of a hard clamp. A final Short.MIN/MAX_VALUE bounds
+     * check stays as a defensive backstop against rounding right at the asymptote (tanh's output
+     * is strictly < 1.0 for any finite input, but rounding a value close enough to it to an int16
+     * could still land on the boundary) - it's not expected to actually engage in normal
+     * operation the way the old hard clamp did. Uses absolute indexed get/put so it doesn't
+     * disturb the buffer's position/limit. No-op (no per-sample cost) when gain is 1x. Shared by
+     * the round-video and voice-message gain settings below - see their own doc comments for why
+     * those are separate settings rather than one shared value. */
+    private static void applyGain(java.nio.ByteBuffer buffer, int lengthBytes, float gain) {
         if (gain == 1.0f) return;
         for (int i = 0; i + 1 < lengthBytes; i += 2) {
             float x = softLimit((buffer.getShort(i) / 32768f) * gain);
@@ -444,21 +479,38 @@ public class PixelGramSettings {
         }
     }
 
-    /** Same gain + soft limiter as applyMicGain(ByteBuffer, int), but reads/writes native-endian
-     * 32-bit float samples already normalized to [-1, 1] (AudioFormat.ENCODING_PCM_FLOAT)
-     * instead of scaled 16-bit shorts - used by the round-video capture path, which records in
-     * float specifically so gain (up to 5x/+14dB) is applied to a sample that was never
+    /** Same gain + soft limiter as applyGain(ByteBuffer, int, float), but reads/writes
+     * native-endian 32-bit float samples already normalized to [-1, 1]
+     * (AudioFormat.ENCODING_PCM_FLOAT) instead of scaled 16-bit shorts - used by both recording
+     * paths, which capture in float specifically so gain is applied to a sample that was never
      * quantized to 16-bit in the first place. lengthBytes is in bytes (lengthBytes/4 float
-     * samples), matching applyMicGain's byte-count convention. No int16 round-trip happens here
-     * at all - the result is written back as a float, quantized to 16-bit exactly once, at the
+     * samples), matching applyGain's byte-count convention. No int16 round-trip happens here at
+     * all - the result is written back as a float, quantized to 16-bit exactly once, at the
      * encoder hand-off. */
-    public static void applyMicGainFloat(java.nio.ByteBuffer buffer, int lengthBytes) {
-        float gain = getMicGainMultiplier();
+    private static void applyGainFloat(java.nio.ByteBuffer buffer, int lengthBytes, float gain) {
         if (gain == 1.0f) return;
         for (int i = 0; i + 3 < lengthBytes; i += 4) {
             float x = softLimit(buffer.getFloat(i) * gain);
             buffer.putFloat(i, x);
         }
+    }
+
+    public static void applyMicGain(java.nio.ByteBuffer buffer, int lengthBytes) {
+        applyGain(buffer, lengthBytes, getMicGainMultiplier());
+    }
+
+    public static void applyMicGainFloat(java.nio.ByteBuffer buffer, int lengthBytes) {
+        applyGainFloat(buffer, lengthBytes, getMicGainMultiplier());
+    }
+
+    /** Voice-message equivalents of applyMicGain/applyMicGainFloat, using the separate
+     * getMicGainMultiplierVoiceMessage() setting - see KEY_MIC_GAIN_VOICE_MESSAGE's doc. */
+    public static void applyMicGainVoiceMessage(java.nio.ByteBuffer buffer, int lengthBytes) {
+        applyGain(buffer, lengthBytes, getMicGainMultiplierVoiceMessage());
+    }
+
+    public static void applyMicGainFloatVoiceMessage(java.nio.ByteBuffer buffer, int lengthBytes) {
+        applyGainFloat(buffer, lengthBytes, getMicGainMultiplierVoiceMessage());
     }
 
     public static int getMicDirectionMode() {
@@ -631,6 +683,7 @@ public class PixelGramSettings {
                 .putBoolean(KEY_AGC, DEFAULT_AGC)
                 .putBoolean(KEY_ECHO_CANCELLATION, DEFAULT_ECHO_CANCELLATION)
                 .putInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN)
+                .putInt(KEY_MIC_GAIN_VOICE_MESSAGE, DEFAULT_MIC_GAIN_VOICE_MESSAGE)
                 .putInt(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE)
                 .putFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION)
                 .putInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE)

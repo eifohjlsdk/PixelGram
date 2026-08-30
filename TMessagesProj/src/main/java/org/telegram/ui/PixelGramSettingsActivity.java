@@ -87,6 +87,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int agcRow;
     private int echoCancellationRow;
     private int micGainRow;
+    // Separate row/setting from micGainRow (round video) - see PixelGramSettings.
+    // DEFAULT_MIC_GAIN_VOICE_MESSAGE's doc for why these aren't shared.
+    private int micGainVoiceMessageRow;
     private int micDirectionRow;
     private int micFieldDimensionRow;
     private int voiceIsolationRow;
@@ -158,6 +161,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
         agcRow = rowCount++;
         echoCancellationRow = rowCount++;
         micGainRow = rowCount++;
+        micGainVoiceMessageRow = rowCount++;
         micDirectionRow = rowCount++;
         micFieldDimensionRow = rowCount++;
         voiceIsolationRow = rowCount++;
@@ -251,6 +255,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 }
             } else if (position == micGainRow) {
                 showMicGainDialog();
+            } else if (position == micGainVoiceMessageRow) {
+                showMicGainVoiceMessageDialog();
             } else if (position == micDirectionRow) {
                 // Same click-bypass issue as the audio-effect check rows: isEnabled(holder)
                 // only dims the row, it doesn't stop this listener from firing. Re-check here.
@@ -421,7 +427,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showMicGainDialog() {
-        String[] names = {"1x (off)", "1.5x", "2x", "3x", "4x", "5x (default)"};
+        String[] names = {"1x (off, default)", "1.5x", "2x", "3x", "4x", "5x"};
         int[] values = {
                 PixelGramSettings.MIC_GAIN_1X,
                 PixelGramSettings.MIC_GAIN_1_5X,
@@ -431,7 +437,24 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 PixelGramSettings.MIC_GAIN_5X
         };
         boolean[] supported = {true, true, true, true, true, true};
-        showModeDialog("Microphone Gain", names, values, supported, micGainRow, PixelGramSettings::setMicGainMode);
+        showModeDialog("Microphone Gain (Round Video)", names, values, supported, micGainRow, PixelGramSettings::setMicGainMode);
+    }
+
+    /** Separate gain setting from round video's own (see PixelGramSettings.
+     * DEFAULT_MIC_GAIN_VOICE_MESSAGE's doc for why) - same underlying gain+limiter code, just a
+     * different default and a different stored preference. */
+    private void showMicGainVoiceMessageDialog() {
+        String[] names = {"1x (off)", "1.5x", "2x", "3x (default)", "4x", "5x"};
+        int[] values = {
+                PixelGramSettings.MIC_GAIN_1X,
+                PixelGramSettings.MIC_GAIN_1_5X,
+                PixelGramSettings.MIC_GAIN_2X,
+                PixelGramSettings.MIC_GAIN_3X,
+                PixelGramSettings.MIC_GAIN_4X,
+                PixelGramSettings.MIC_GAIN_5X
+        };
+        boolean[] supported = {true, true, true, true, true, true};
+        showModeDialog("Microphone Gain (Voice Messages)", names, values, supported, micGainVoiceMessageRow, PixelGramSettings::setMicGainModeVoiceMessage);
     }
 
     private void showMicDirectionDialog() {
@@ -820,7 +843,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == noiseSuppressionRow && NoiseSuppressor.isAvailable())
                     || (pos == agcRow && AutomaticGainControl.isAvailable())
                     || (pos == echoCancellationRow && AcousticEchoCanceler.isAvailable())
-                    || pos == micGainRow
+                    || pos == micGainRow || pos == micGainVoiceMessageRow
                     || (pos == micDirectionRow && PixelGramSettings.isMicDirectionSupported())
                     || (pos == micFieldDimensionRow && PixelGramSettings.isMicFieldDimensionSupported())
                     || pos == voiceIsolationRow || pos == gateThresholdRow
@@ -907,7 +930,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     } else if (position == voiceEnhancementRow) {
                         cell.setTextAndValue("Voice Enhancement", voiceEnhancementName(PixelGramSettings.getVoiceEnhancementMode()), true);
                     } else if (position == micGainRow) {
-                        cell.setTextAndValue("Microphone Gain", formatMicGain(PixelGramSettings.getMicGainMode()), true);
+                        cell.setTextAndValue("Microphone Gain (Round Video)", formatMicGain(PixelGramSettings.getMicGainMode()), true);
+                    } else if (position == micGainVoiceMessageRow) {
+                        cell.setTextAndValue("Microphone Gain (Voice Messages)", formatMicGain(PixelGramSettings.getMicGainModeVoiceMessage()), true);
                     } else if (position == micDirectionRow) {
                         boolean supported = PixelGramSettings.isMicDirectionSupported();
                         cell.setTextAndValue("Microphone Direction" + (supported ? "" : " (unavailable)"), formatMicDirection(PixelGramSettings.getMicDirectionMode()), true);

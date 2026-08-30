@@ -1016,6 +1016,27 @@ remove - but whether the three-way equivalence (denoiser-only vs. denoiser-stack
 70% wet fraction both hold up in a noisier environment (café, traffic) is untested. A quiet room is
 the easy case for a denoiser; flagged rather than assumed to generalize.
 
+## Mic gain split: voice messages set to 3x, round video reset to 1x (2026-08-30)
+- Round video's own default (`DEFAULT_MIC_GAIN`) reset from 5x back to `MIC_GAIN_1X` (off),
+  now that the audio-defaults second revision above is being superseded for release - gain is
+  no longer treated as an always-on compensation once the denoiser/wet-dry work above changed
+  what's actually needed.
+- Voice messages given their own independent default, `DEFAULT_MIC_GAIN_VOICE_MESSAGE = MIC_GAIN_3X`,
+  separate from round video's `DEFAULT_MIC_GAIN`. `PixelGramSettingsActivity` now exposes two
+  separate rows ("Microphone Gain (Round Video)" / "Microphone Gain (Voice Messages)")
+  backed by two separate preference keys, both driving the same shared gain+soft-limiter core
+  (`applyGain`/`applyGainFloat`) with a per-path multiplier.
+- **This 3x is a carried-over compensation, not a confirmed fix.** It rests entirely on the
+  round-video measurement above (3x measured at +9.7dB, peaks well clear of clipping, soft
+  limiter catching anything close) plus the fact that voice messages run through the exact same
+  gain/limiter code. That's a reasonable basis for expecting similar behavior, but the voice
+  message path itself has never been separately measured - no mean/peak dBFS numbers have been
+  gathered for it at any gain setting, at 1x or otherwise. It's also unclear why the two paths
+  would need different gain treatment at all if the code and expected input level are the same;
+  that gap between them is unexplained. Worth investigating properly later: measure voice
+  messages the same way round video was measured (mean/peak dBFS at each gain step) rather than
+  assuming the round-video numbers transfer.
+
 ## Full-history leak audit before publishing (2026-08-30)
 - Scanned the working tree and every commit reachable from the fork's start
   (`3f03bfc73`, the merge base with upstream) on both `main` and
