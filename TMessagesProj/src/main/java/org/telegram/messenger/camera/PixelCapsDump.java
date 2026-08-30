@@ -8,7 +8,9 @@ import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
+import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
@@ -72,6 +74,12 @@ public class PixelCapsDump {
             dumpAudioMicPreferences(sb);
         } catch (Exception e) {
             line(sb, "audio mic-preference dump failed - " + e);
+        }
+
+        try {
+            dumpAudioInputCapabilities(context, sb);
+        } catch (Exception e) {
+            line(sb, "audio input-capability dump failed - " + e);
         }
 
         line(sb, "=== end PixelCaps dump ===");
@@ -306,6 +314,140 @@ public class PixelCapsDump {
         }
 
         line(sb, "note: getActiveMicrophones() during an ACTUAL round-video recording is logged separately under tag PixelCaps by a one-line hook in InstantCameraView (see prepareEncoder()) - the idle-probe result above only shows the default routing with no capture in progress.");
+    }
+
+    // ---------------------------------------------------------------- audio input capabilities
+
+    /**
+     * Investigates capture-format headroom ahead of possibly switching AudioRecord off
+     * ENCODING_PCM_16BIT: whether ENCODING_PCM_FLOAT/24-bit/32-bit are accepted, what sample
+     * rates AudioDeviceInfo reports as natively supported by the built-in mic (vs. what we
+     * actually request, 48kHz), whether stereo/multi-channel input is accepted, and whether
+     * AudioSource.UNPROCESSED is available. Every probe here only constructs (and immediately
+     * releases) an AudioRecord to read back getState() - consistent with this class's
+     * construct-only, no-capture contract (see class doc); it does NOT call startRecording()
+     * or read any audio, so it cannot confirm what a live capture actually delivers (e.g.
+     * whether a "supported" stereo config carries distinct channel content or duplicated
+     * mono) - only whether the platform accepts the request at construction time.
+     */
+    private static void dumpAudioInputCapabilities(Context context, StringBuilder sb) {
+        line(sb, "--- audio input capabilities ---");
+
+        // AudioDeviceInfo.getSampleRates()/getChannelCounts()/getEncodings() on the built-in
+        // mic port is the documented way to ask "what does this device natively support" as
+        // opposed to "what will AudioRecord silently resample/convert to get me" - an empty
+        // array is documented as "arbitrary rate/channel count accepted", not "nothing".
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) {
+                line(sb, "AudioManager unavailable, skipping AudioDeviceInfo enumeration");
+            } else {
+                AudioDeviceInfo[] inputs = am.getDevices(AudioManager.GET_DEVICES_INPUTS);
+                line(sb, "AudioManager.getDevices(GET_DEVICES_INPUTS): " + inputs.length + " device(s)");
+                for (AudioDeviceInfo dev : inputs) {
+                    line(sb, "  input device id=" + dev.getId() + " type=" + describeAudioDeviceType(dev.getType())
+                            + " productName=\"" + dev.getProductName() + "\"");
+                    line(sb, "    sampleRates=" + Arrays.toString(dev.getSampleRates())
+                            + " (empty = platform claims arbitrary rate accepted, not \"none supported\")");
+                    line(sb, "    channelCounts=" + Arrays.toString(dev.getChannelCounts()));
+                    line(sb, "    channelMasks=" + Arrays.toString(dev.getChannelMasks()));
+                    line(sb, "    channelIndexMasks=" + Arrays.toString(dev.getChannelIndexMasks()));
+                    line(sb, "    encodings=" + Arrays.toString(dev.getEncodings()));
+                }
+            }
+        } catch (Exception e) {
+            line(sb, "AudioDeviceInfo enumeration failed - " + e);
+        }
+
+        // For context only: this is the fast-path OUTPUT sample rate, documented as specific
+        // to the low-latency playback path, not the mic input path. Logged as a corroborating
+        // signal for "what rate is this SoC's audio HAL actually clocked at", not as proof of
+        // the input path's native rate - AudioDeviceInfo above is the real answer for input.
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            String outputRate = am != null ? am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE) : null;
+            line(sb, "AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE (fast-path OUTPUT, context only, NOT the input answer) = " + outputRate);
+        } catch (Exception e) {
+            line(sb, "PROPERTY_OUTPUT_SAMPLE_RATE query failed - " + e);
+        }
+
+        // Construction-only probes: getMinBufferSize() followed by actually building an
+        // AudioRecord and checking getState() == STATE_INITIALIZED, since getMinBufferSize()
+        // returning a valid size doesn't by itself guarantee the constructor succeeds on every
+        // device. Every probe is released immediately after the check.
+        int[] rates = {8000, 16000, 44100, 48000, 96000, 192000};
+        for (int rate : rates) {
+            probeConfig(sb, rate, AudioFormat.CHANNEL_IN_MONO, "MONO", AudioFormat.ENCODING_PCM_16BIT, "PCM_16BIT");
+        }
+
+        line(sb, "--- encoding probes at 48kHz mono (the rate/channel config we actually capture at) ---");
+        probeConfig(sb, 48000, AudioFormat.CHANNEL_IN_MONO, "MONO", AudioFormat.ENCODING_PCM_FLOAT, "PCM_FLOAT");
+        if (Build.VERSION.SDK_INT >= 31) {
+            probeConfig(sb, 48000, AudioFormat.CHANNEL_IN_MONO, "MONO", AudioFormat.ENCODING_PCM_24BIT_PACKED, "PCM_24BIT_PACKED");
+            probeConfig(sb, 48000, AudioFormat.CHANNEL_IN_MONO, "MONO", AudioFormat.ENCODING_PCM_32BIT, "PCM_32BIT");
+        } else {
+            line(sb, "ENCODING_PCM_24BIT_PACKED/PCM_32BIT require API 31, this device is API " + Build.VERSION.SDK_INT + " - skipped");
+        }
+
+        line(sb, "--- channel-count probes at 48kHz ---");
+        probeConfig(sb, 48000, AudioFormat.CHANNEL_IN_STEREO, "STEREO", AudioFormat.ENCODING_PCM_16BIT, "PCM_16BIT");
+        probeConfig(sb, 48000, AudioFormat.CHANNEL_IN_STEREO, "STEREO", AudioFormat.ENCODING_PCM_FLOAT, "PCM_FLOAT");
+
+        // AudioSource.UNPROCESSED: PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED is documented to
+        // return "true" (as a String) if declared, and be absent/null otherwise - logging the
+        // raw value rather than a boolean since a non-"true" non-null value would itself be
+        // informative. Backed up with an actual construction probe using that source, since a
+        // property claim and a real AudioRecord accepting the source are two different checks.
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            String unprocessedProp = am != null ? am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) : null;
+            line(sb, "AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED = " + unprocessedProp);
+        } catch (Exception e) {
+            line(sb, "PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED query failed - " + e);
+        }
+        probeSource(sb, MediaRecorder.AudioSource.UNPROCESSED, "UNPROCESSED", 48000);
+        probeSource(sb, MediaRecorder.AudioSource.VOICE_COMMUNICATION, "VOICE_COMMUNICATION (current default, for comparison)", 48000);
+    }
+
+    private static void probeConfig(StringBuilder sb, int rate, int channelConfig, String channelName, int encoding, String encodingName) {
+        int minBuf = AudioRecord.getMinBufferSize(rate, channelConfig, encoding);
+        if (minBuf <= 0) {
+            line(sb, rate + "Hz " + channelName + " " + encodingName + ": getMinBufferSize() = " + describeMinBufferError(minBuf) + " (rejected before construction)");
+            return;
+        }
+        AudioRecord probe = null;
+        try {
+            probe = new AudioRecord(MediaRecorder.AudioSource.MIC, rate, channelConfig, encoding, minBuf * 2);
+            boolean initialized = probe.getState() == AudioRecord.STATE_INITIALIZED;
+            line(sb, rate + "Hz " + channelName + " " + encodingName + ": getMinBufferSize()=" + minBuf
+                    + " constructed, getState()=" + (initialized ? "STATE_INITIALIZED (accepted)" : "STATE_UNINITIALIZED (rejected)")
+                    + (initialized ? " actualSampleRate=" + probe.getSampleRate() : ""));
+        } catch (Exception e) {
+            line(sb, rate + "Hz " + channelName + " " + encodingName + ": getMinBufferSize()=" + minBuf + " but construction threw - " + e);
+        } finally {
+            if (probe != null) probe.release();
+        }
+    }
+
+    private static String describeMinBufferError(int minBuf) {
+        if (minBuf == AudioRecord.ERROR_BAD_VALUE) return "ERROR_BAD_VALUE";
+        if (minBuf == AudioRecord.ERROR) return "ERROR";
+        return String.valueOf(minBuf);
+    }
+
+    private static void probeSource(StringBuilder sb, int source, String sourceName, int rate) {
+        int minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        if (minBuf <= 0) minBuf = 3584;
+        AudioRecord probe = null;
+        try {
+            probe = new AudioRecord(source, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2);
+            boolean initialized = probe.getState() == AudioRecord.STATE_INITIALIZED;
+            line(sb, "AudioSource." + sourceName + " @ " + rate + "Hz mono PCM_16BIT: constructed, getState()=" + (initialized ? "STATE_INITIALIZED (accepted)" : "STATE_UNINITIALIZED (rejected)"));
+        } catch (Exception e) {
+            line(sb, "AudioSource." + sourceName + " @ " + rate + "Hz mono PCM_16BIT: construction threw - " + e);
+        } finally {
+            if (probe != null) probe.release();
+        }
     }
 
     // ---------------------------------------------------------------- MicrophoneInfo decoding
