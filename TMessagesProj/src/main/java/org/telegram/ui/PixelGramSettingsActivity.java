@@ -325,8 +325,12 @@ public class PixelGramSettingsActivity extends BaseFragment {
     // that lands between two capture texels). 384 is annotated as stock Telegram's own round-video
     // resolution for reference, not because it's this app's default.
     private void showResolutionDialog() {
-        CharSequence[] options = {"320 px (6:1)", "384 px (5:1, stock)", "448 px", "480 px (4:1, default)", "512 px", "640 px (3:1)", "960 px (2:1)"};
-        int[] values = {320, 384, 448, 480, 512, 640, 960};
+        // 720 and 800 confirmed rejected server-side (same square-fallback failure as 960, at
+        // upload time rather than in any client) - see FINDINGS.md's "960px: a separate, real
+        // server-side ceiling". Replaced with 672 and 704 to bracket the actual ceiling, which
+        // sits somewhere in (640, 720) - 704 is a multiple of 16, the most likely candidate.
+        CharSequence[] options = {"320 px (6:1)", "384 px (5:1, stock)", "448 px", "480 px (4:1)", "512 px", "640 px (3:1, default)", "672 px", "704 px", "960 px (2:1)"};
+        int[] values = {320, 384, 448, 480, 512, 640, 672, 704, 960};
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Resolution");
         builder.setItems(options, (dialog, which) -> {

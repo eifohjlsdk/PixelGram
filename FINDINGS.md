@@ -440,104 +440,63 @@ a small frame doesn't buy anything once you're already comfortably encoding it. 
 look better at the same bitrate. **Default resolution moved to 480px** (default filter stays
 Lanczos, already the default before this).
 
-### Bug: 640px+ renders with a black rim / mostly-black frame (root cause unresolved)
+### Bug (resolved): declared dimensions wrong, not a rendering or protocol limit
 
-640px rendered as a proper circle but with a black rim around the edge, as if the content were
-drawn smaller than the circular mask expects; 960px was mostly black with only a small centered
-circle of real content plus the watermark - degrading progressively rather than failing outright.
-Reproduced by extracting a raw frame (`ffmpeg`) directly from the locally-saved sent file, with no
-Telegram UI involved - the defect is genuinely baked into the encoded pixels, not a rendering
-artifact of any one player.
+640px originally rendered with a black rim around the circle (as if content were drawn smaller
+than the mask expects); iOS rendered the same 640px send as a square instead of round. These
+looked like two unrelated, platform-specific problems - a rendering defect on Android, a size
+policy or decoder fallback on iOS - and were investigated as such.
 
-Two explanations were investigated and ruled out or downgraded; the actual root cause is still
-open.
+**Root cause, confirmed: `VideoEditedInfo.resultWidth`/`resultHeight` were hardcoded to the legacy
+`360` round-video size** in three places in `InstantCameraView.java`, regardless of the configured
+resolution. These values flow straight into `TL_documentAttributeVideo.w`/`.h`, which is the only
+place any round-video player - every platform, ours included - learns the frame's dimensions
+before decoding. A player sizes its circular mask/viewport from that *declared* value, not the
+actual decoded resolution, so a 640px video declared as 360px shows real content only within a
+"360px-sized" circle relative to a 640px frame - a visible black rim on Android's masking, and
+apparently enough of a mismatch that iOS's round-video path didn't accept it as a valid round
+message at all and fell back to plain video display. Same underlying bug, two different-looking
+symptoms depending on how strictly each platform's video pipeline reacts to a self-contradictory
+declaration.
 
-**Probably not `VideoEditedInfo.resultWidth`/`resultHeight`, but the test of that claim was flawed
-and should be redone.** These were hardcoded to the legacy `360` in three places in
-`InstantCameraView.java` regardless of the configured resolution - a real, independent bug
-(`TL_documentAttributeVideo.w`/`.h` come straight from these fields) worth having fixed regardless.
-The first fix pass only actually caught one of the three call sites - the other two sit inside a
+The first fix pass only actually corrected one of the three call sites (the other two sit inside a
 lambda with different indentation, so a literal-text `replace_all` silently missed them despite
-reporting success - and the missed sites include the one used for a normal immediate record-and-
-send (`notReadyYet = true` in `handleStopRecording`). The "still broken with the fix applied" test
-that downgraded this explanation therefore ran with the fix only partially active. All three sites
-are now genuinely fixed (using the actual `videoWidth`/`videoHeight`), but this specific
-explanation has **not been re-tested since** - the black-rim/square-fallback root cause should
-still be treated as open rather than confidently blamed on the shader precision theory below until
-a fresh 640px send is checked against the fully-applied fix.
+reporting success) - once all three were genuinely fixed to declare the real `videoWidth`/
+`videoHeight`, **640px rendered correctly as a circle on Android and iOS both**. This is why it
+looked like a platform-specific rendering limit or policy: it was the same declared-dimension bug
+presenting differently depending on how each platform's video stack responds to a false
+declaration, not two separate constraints.
 
-**Not confirmed to be the `round_blur_stage_2_frag.glsl` mediump overflow either**, despite being a
-real, demonstrable-in-isolation precision bug: that shader reads raw `gl_FragCoord` pixel
-coordinates and squares a coordinate difference inside `length()`, which at `mediump`/FP16
-precision (~65504 max representable value) overflows once frame half-width exceeds ~256px (i.e.
-above ~512px) - mathematically real, and 480px (half-width 240) vs 640px (320) vs 960px (480)
-tracks the reported severity suspiciously well. But **stock Telegram Android (Play Store) and
-Telegram Web both render the same 640px video sent from this fork correctly as a clean circle** -
-if the shader math itself were the cause, stock Android would show the identical artifact on the
-identical GPU (mediump's actual precision is a property of the driver/hardware, and many GPUs
-implement it as full fp32 regardless of the spec's minimum, which would explain mediump *never*
-overflowing on this hardware for any client). Also confirmed **the rim reproduces on a
-pre-supersampling build** (reverted to the `v1.0.1` tag, no GL/shader changes from this whole
-session applied) sending at 640px - so it isn't introduced by the supersampling GL work either.
-Kept the `precision highp float` change in that shader as a **defensive precision fix** - the
-overflow is real in principle and the fix is free (highp has enormous headroom, no measured cost)
-- but it should not be described as a confirmed fix for this bug, since the bug doesn't reproduce
-on stock in the first place and reappears on our own build with or without the encode-time-only
-`resultWidth` fix.
+The `round_blur_stage_2_frag.glsl` `mediump`→`highp` change (still in place) was a red herring for
+this bug specifically - a real, demonstrable-in-isolation FP16 overflow risk in that shader at
+large frame sizes, but not what was causing either symptom here. Left as a harmless, free precision
+improvement, decoupled from this investigation.
 
-**New data point: iOS behaves differently from Android/Web.** The same 640px send renders as a
-*square* on Telegram iOS - i.e. iOS doesn't treat the message as round video at all and falls back
-to normal video display, matching 960's failure mode more than 640's on Android. Checked the iOS
-source directly (`~/dev/telegram-ios`) for what makes a client treat a video as round:
-- `TelegramMediaFile.isInstantVideo` (`SyncCore_TelegramMediaFile.swift`) is a pure
-  `flags.contains(.instantRoundVideo)` check - no dimension involved.
-- `telegramMediaFileAttributesFromApiAttributes` (`ApiUtils/TelegramMediaFile.swift`) parses the
-  `round_message` bit unconditionally into that flag - no gate on `w`/`h` either.
-- The circular mask itself (`ChatMessageInteractiveMediaNode.swift`:
-  `videoCorners = ImageCorners(radius: boundingSize.width / 2.0)`) sizes off the **layout bounding
-  box** (a fixed on-screen bubble size), not the source video's declared or decoded resolution - so
-  this specific code can't be why a bigger source video would render differently.
-- iOS's own round-video recorder (`VideoMessageCameraScreen.swift`) is hardcoded to
-  `PixelDimensions(width: 400, height: 400)`, and the `.videoMessage` `MediaEditorValues` quality
-  preset caps outgoing dimensions at 400px too - iOS has never produced, and by extension likely
-  never exercised playback of, round video at any other size.
-- No explicit maximum-size check or round/square decision point tied to dimensions was found
-  anywhere in the client source searched. The square fallback could be a `VideoToolbox`/decoder-level
-  playback failure that triggers a graceful UI degradation, or something server-side invisible from
-  client source - **not confirmed**, and not resolvable without testing on an actual iOS device,
-  which wasn't available here.
+### 960px: a separate, real server-side ceiling
 
-**Net position: the mechanism behind this bug is still unknown.** What's confirmed: it's not the
-supersampling GL work, and the `resultWidth`/`360` bug - while real and worth having fixed - isn't
-it either. It correlates strongly with resolutions no mainstream client (stock, Telegram X,
-Cherrygram - see the client comparison above) has ever shipped or exercised, on both the Android
-and iOS sides independently, via two different failure modes (Android: baked-in visual defect;
-iOS: round flag not honored / falls back to square).
-
-### Safe maximum resolution for cross-client playback
-
-No mainstream client (stock, Telegram X, Cherrygram) has ever shipped round video above **512px**
-- Cherrygram's remote-config default (512) is the highest value confirmed in real production use
-anywhere in the ecosystem, and iOS's own recorder has never produced anything but 400px. Combined
-with the confirmed cross-client breakage above that range (Android: black rim/mostly-black frame;
-iOS: round flag not honored), this is now more than a "nobody's tested it" caution - it's observed
-breakage on two independent client codebases at 640px and up, sent from a client capable of
-exceeding the range every other client stays within.
-
-**Recommendation: treat 512px as the practical safe ceiling for send-side resolution.** The
-resolution setting still offers 640/960 since a definitive root cause (and therefore a principled
-cutoff) hasn't been established, and they aren't against protocol spec - but recipients on stock
-Android, Telegram Web, or iOS should be expected to see a broken or non-round rendering above
-~512px until the actual mechanism is found.
+With the dimension bug fixed, 960px *still* renders as a square on send - but this happens at
+upload time rather than in any client's own rendering, meaning the server itself is declining to
+treat it as a round message and reclassifying it as a normal video. This is a distinct, genuine
+constraint (unlike the 512px "nobody's tested higher" caution retracted above, which rested
+entirely on the now-fixed declared-dimension bug and had no other basis). Where the actual ceiling
+sits between 640px (known good) and 960px (known rejected) is being bracketed empirically - see the
+downscale filter/dither/resolution options above for the current picker range.
 
 ## Image quality defaults revised for the supersample-capture pipeline (2026-08-30)
 
 Defaults changed: resolution to 480px, noise reduction off, edge mode off, face-weighted AE
 metering off, exposure compensation 0.0, tone mapping stays Fast, downscale filter stays Lanczos.
 
-**Resolution: 480px.** Clean 4:1 downscale from the 1920px supersample capture, and stays
-comfortably clear of the 512px practical ceiling for cross-client playback established above
-(confirmed breakage above that on both Android and iOS).
+**Resolution: 480px.** Clean 4:1 downscale from the 1920px supersample capture. Chosen as a
+cautious value before the declared-dimension bug above was fully understood - now that 640px is
+confirmed working correctly on both Android and iOS, and the real ceiling is being bracketed
+between 640 (good) and 960 (rejected server-side), expect this default to move up once that
+ceiling is found (see "960px: a separate, real server-side ceiling" above).
+
+**Superseded same day**: default moved to 640px once it was confirmed working on Android, iOS, and
+web (see "960px: a separate, real server-side ceiling" above) - a clean 3:1 downscale from the
+1920px capture. 720px is confirmed rejected server-side; the actual ceiling is being bracketed
+between 641 and 719 with 672/704 candidates. Expect this default to move up again once found.
 
 **Noise reduction and edge mode: off (previously Fast/Fast).** Both were tuned back when the ISP
 did the *entire* resolution reduction with no oversampling margin at all - real-time capture-stage

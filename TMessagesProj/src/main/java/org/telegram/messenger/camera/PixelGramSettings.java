@@ -116,12 +116,13 @@ public class PixelGramSettings {
     public static final boolean DEFAULT_FACE_AE_METERING = false;
     public static final float DEFAULT_EXPOSURE_COMPENSATION = 0.0f;
     // Set from A/B testing across the full resolution range (see FINDINGS.md): resolution
-    // mattered more than bitrate, Lanczos looked clearly better than Box/Gaussian, and 512px is
-    // the practical safe ceiling for cross-client playback (confirmed breakage above that on both
-    // Android and iOS, on a client capable of exceeding what any mainstream client has ever
-    // shipped - see FINDINGS.md). 480 is a clean 4:1 downscale from the 1920 supersample capture
-    // and stays comfortably clear of that ceiling.
-    public static final int DEFAULT_RESOLUTION = 480;
+    // mattered more than bitrate, and Lanczos looked clearly better than Box/Gaussian. 640 is
+    // confirmed working (round, not reclassified as a normal video) on Android, iOS, and web, and
+    // is a clean 3:1 downscale from the 1920 supersample capture. There's a real server-side
+    // ceiling somewhere above 640 (720 is confirmed rejected) - being bracketed empirically; this
+    // default should move up once that's found, since testing shows resolution is worth pushing
+    // further than bitrate.
+    public static final int DEFAULT_RESOLUTION = 640;
     public static final int DEFAULT_VIDEO_BITRATE = 1_000_000;
     public static final int DEFAULT_AUDIO_BITRATE = 96_000;
     public static final boolean DEFAULT_DEBUG_LOGGING = false;
