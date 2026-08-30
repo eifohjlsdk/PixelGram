@@ -85,8 +85,14 @@ public class PixelCameraLog {
         }
     }
 
-    /** One marker line per recording start, config summary included. No-op if debug logging is off. */
+    /**
+     * One marker line per recording start, config summary included. Always goes to logcat (this
+     * was the actual bug: it used to skip Log entirely and only ever write to the on-device file,
+     * gated behind isDebugLoggingEnabled() - so it could never show up in `adb logcat` at all,
+     * regardless of that setting). The file write remains gated, matching d()/w() above.
+     */
     public static void marker(String configSummary) {
+        Log.i(TAG, "=== recording start: " + configSummary + " ===");
         if (!PixelGramSettings.isDebugLoggingEnabled()) return;
         writeLine("=== recording start: " + configSummary + " ===");
     }
