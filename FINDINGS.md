@@ -1016,6 +1016,50 @@ remove - but whether the three-way equivalence (denoiser-only vs. denoiser-stack
 70% wet fraction both hold up in a noisier environment (café, traffic) is untested. A quiet room is
 the easy case for a denoiser; flagged rather than assumed to generalize.
 
+## Full-history leak audit before publishing (2026-08-30)
+- Scanned the working tree and every commit reachable from the fork's start
+  (`3f03bfc73`, the merge base with upstream) on both `main` and
+  `g6-ae-fps-range-fix` - file contents, diffs, commit messages, and
+  author/committer metadata, not just current file contents. Confirmed
+  clean: all commit author/committer addresses on pushed history use the
+  GitHub noreply format; no personal emails, LAN IPs, phone numbers, device
+  serials, or room/appearance/circumstance details anywhere in this file or
+  code comments.
+- **Found, already public** (on `pixelgram/main`, confirmed via the GitHub
+  API that this repo is public): the strings `eifohjlsdk/telegram-pixel`
+  (a separate, private repo on the same account), the branch name
+  `wip-settings-recovered`, and the path `~/dev/telegram-pixel/.git` appear
+  in the diffs *and commit messages* of three early commits (`72f51b9f5`,
+  `71b0b8b21`, `174920b76`) - the two later "fix" commits both restate the
+  strings verbatim while describing the fix, so the file-content cleanup
+  didn't remove them from history. Reviewed and **accepted as-is**: a repo
+  name, a branch name, and a home-directory path pattern aren't personally
+  identifying on their own, and don't justify a force-push rewrite of
+  already-published history.
+- **Found, not public - a near miss worth knowing about**: a real personal
+  email is the author/committer on ~9 commits that exist only on local
+  branches (`wip-settings-recovered`, `main`, `master`,
+  `camerax-experiment`), including one that adds a `PIXELGRAM_PROJECT_HANDOFF.md`
+  naming the private repo and local path outright. Confirmed via
+  `git merge-base --is-ancestor` against every ref on the `pixelgram` remote
+  that none of this is reachable from anything pushed.
+- **Real hazard found and fixed**: local `main` and `master` had
+  `branch.<name>.remote`/`merge` pointing at `origin` = `DrKLO/Telegram`
+  (the public upstream, unrelated to this fork). With Git's default
+  `push.default=simple`, a bare `git push` on either branch would have
+  targeted a third party's public repo with the real-email commits above.
+  Fixed with `git branch --unset-upstream` on both - reversible, not
+  destructive. `wip-settings-recovered`/`camerax-experiment` were already
+  unpushable by omission (no remote configured at all), so nothing further
+  was needed there; deliberately did not delete those branches or the
+  `~/dev/telegram-pixel` worktree checked out on `wip-settings-recovered`,
+  since that destroys history that isn't safe to assume is disposable.
+- Also reviewed the 7 tracked `google-services.json` files (real, custom
+  Firebase project created for this fork). Left as-is per Google's own
+  position that Android client API keys aren't meant to be secret - access
+  is controlled by Firebase Security Rules/App Check, and this key is
+  already restricted to this app's package name and signing certificate.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
