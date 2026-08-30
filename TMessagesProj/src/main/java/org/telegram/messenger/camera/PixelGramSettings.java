@@ -349,6 +349,23 @@ public class PixelGramSettings {
         }
     }
 
+    /** Same gain + soft limiter as applyMicGain(ByteBuffer, int), but reads/writes native-endian
+     * 32-bit float samples already normalized to [-1, 1] (AudioFormat.ENCODING_PCM_FLOAT)
+     * instead of scaled 16-bit shorts - used by the round-video capture path, which records in
+     * float specifically so gain (up to 5x/+14dB) is applied to a sample that was never
+     * quantized to 16-bit in the first place. lengthBytes is in bytes (lengthBytes/4 float
+     * samples), matching applyMicGain's byte-count convention. No int16 round-trip happens here
+     * at all - the result is written back as a float, quantized to 16-bit exactly once, at the
+     * encoder hand-off. */
+    public static void applyMicGainFloat(java.nio.ByteBuffer buffer, int lengthBytes) {
+        float gain = getMicGainMultiplier();
+        if (gain == 1.0f) return;
+        for (int i = 0; i + 3 < lengthBytes; i += 4) {
+            float x = softLimit(buffer.getFloat(i) * gain);
+            buffer.putFloat(i, x);
+        }
+    }
+
     public static int getMicDirectionMode() {
         return prefs().getInt(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE);
     }

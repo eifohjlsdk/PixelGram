@@ -5,8 +5,11 @@ import java.nio.ByteBuffer;
 /**
  * Per-recording-session voice isolation DSP: an optional 90Hz-7kHz bandpass (two cascaded
  * Butterworth biquads, RBJ Audio EQ Cookbook forms) followed by an optional downward-expander
- * gate, applied in place to a 16-bit PCM mono buffer. Runs before PixelGramSettings.applyMicGain
- * and before encoding, in both the round-video and voice-message paths.
+ * gate, applied in place to a mono PCM buffer - process() for 16-bit PCM (the voice-message
+ * path), processFloat() for ENCODING_PCM_FLOAT (the round-video path, which captures in float
+ * to avoid an early quantization step - see PixelGramSettings.applyMicGain's doc). Both share
+ * the same per-sample DSP via filterOneSample(); only the buffer read/write format differs.
+ * Runs before PixelGramSettings.applyMicGain and before encoding, in both paths.
  *
  * Stateful - filter delay lines, the envelope follower, and the gate's hold counter/smoothed
  * gain all carry across successive read() buffers within one recording. One instance must live
@@ -135,46 +138,73 @@ public class VoiceIsolationProcessor {
         float thresholdDb = PixelGramSettings.getVoiceIsolationGateThresholdDb();
 
         for (int i = 0; i + 1 < length; i += 2) {
-            float x = buffer.getShort(i) / 32768f;
-
-            float hpY = hpB0 * x + hpB1 * hpX1 + hpB2 * hpX2 - hpA1 * hpY1 - hpA2 * hpY2;
-            hpX2 = hpX1; hpX1 = x;
-            hpY2 = hpY1; hpY1 = hpY;
-
-            float lpY = lpB0 * hpY + lpB1 * lpX1 + lpB2 * lpX2 - lpA1 * lpY1 - lpA2 * lpY2;
-            lpX2 = lpX1; lpX1 = hpY;
-            lpY2 = lpY1; lpY1 = lpY;
-
-            float filtered = lpY;
-
-            if (gateEnabled) {
-                float absSample = Math.abs(filtered);
-                float envCoef = (absSample > envelope) ? envAttackCoef : envReleaseCoef;
-                envelope += envCoef * (absSample - envelope);
-
-                float envDb = 20f * (float) Math.log10(Math.max(envelope, 1e-6f));
-                float targetGain;
-                if (envDb >= thresholdDb) {
-                    holdCounter = holdSamples;
-                    targetGain = 1f;
-                } else if (holdCounter > 0) {
-                    holdCounter--;
-                    targetGain = 1f;
-                } else {
-                    float belowDb = thresholdDb - envDb;
-                    float reductionDb = belowDb * (1f - 1f / RATIO);
-                    targetGain = (float) Math.pow(10.0, -reductionDb / 20.0);
-                }
-
-                float gainCoef = (targetGain > currentGain) ? gateAttackCoef : gateReleaseCoef;
-                currentGain += gainCoef * (targetGain - currentGain);
-                filtered *= currentGain;
-            }
-
+            float filtered = filterOneSample(buffer.getShort(i) / 32768f, gateEnabled, thresholdDb);
             int outSample = Math.round(filtered * 32768f);
             if (outSample > Short.MAX_VALUE) outSample = Short.MAX_VALUE;
             else if (outSample < Short.MIN_VALUE) outSample = Short.MIN_VALUE;
             buffer.putShort(i, (short) outSample);
         }
+    }
+
+    /** Same DSP as process(ByteBuffer, int), but reads/writes native-endian 32-bit float
+     * samples already normalized to [-1, 1] (AudioFormat.ENCODING_PCM_FLOAT) instead of
+     * scaled 16-bit shorts - used by capture paths that record in float to avoid quantizing
+     * the signal to 16-bit ahead of this stage. length is in bytes (length/4 float samples),
+     * matching process()'s byte-count convention. No int16 conversion happens anywhere in this
+     * path - filtered is written back as-is. */
+    public void processFloat(ByteBuffer buffer, int length) {
+        int mode = PixelGramSettings.getVoiceIsolationMode();
+        if (mode == PixelGramSettings.VOICE_ISOLATION_OFF) {
+            return;
+        }
+        boolean gateEnabled = mode == PixelGramSettings.VOICE_ISOLATION_BANDPASS_GATE;
+        float thresholdDb = PixelGramSettings.getVoiceIsolationGateThresholdDb();
+
+        for (int i = 0; i + 3 < length; i += 4) {
+            float filtered = filterOneSample(buffer.getFloat(i), gateEnabled, thresholdDb);
+            buffer.putFloat(i, filtered);
+        }
+    }
+
+    /** The bandpass + gate DSP for one sample, shared by process()/processFloat() - operates
+     * entirely on the [-1, 1]-normalized float domain regardless of which buffer format the
+     * caller stores samples in. Advances all filter/envelope/gate state by exactly one sample;
+     * callers must call this once per input sample, in order. */
+    private float filterOneSample(float x, boolean gateEnabled, float thresholdDb) {
+        float hpY = hpB0 * x + hpB1 * hpX1 + hpB2 * hpX2 - hpA1 * hpY1 - hpA2 * hpY2;
+        hpX2 = hpX1; hpX1 = x;
+        hpY2 = hpY1; hpY1 = hpY;
+
+        float lpY = lpB0 * hpY + lpB1 * lpX1 + lpB2 * lpX2 - lpA1 * lpY1 - lpA2 * lpY2;
+        lpX2 = lpX1; lpX1 = hpY;
+        lpY2 = lpY1; lpY1 = lpY;
+
+        float filtered = lpY;
+
+        if (gateEnabled) {
+            float absSample = Math.abs(filtered);
+            float envCoef = (absSample > envelope) ? envAttackCoef : envReleaseCoef;
+            envelope += envCoef * (absSample - envelope);
+
+            float envDb = 20f * (float) Math.log10(Math.max(envelope, 1e-6f));
+            float targetGain;
+            if (envDb >= thresholdDb) {
+                holdCounter = holdSamples;
+                targetGain = 1f;
+            } else if (holdCounter > 0) {
+                holdCounter--;
+                targetGain = 1f;
+            } else {
+                float belowDb = thresholdDb - envDb;
+                float reductionDb = belowDb * (1f - 1f / RATIO);
+                targetGain = (float) Math.pow(10.0, -reductionDb / 20.0);
+            }
+
+            float gainCoef = (targetGain > currentGain) ? gateAttackCoef : gateReleaseCoef;
+            currentGain += gainCoef * (targetGain - currentGain);
+            filtered *= currentGain;
+        }
+
+        return filtered;
     }
 }

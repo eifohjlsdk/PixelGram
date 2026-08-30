@@ -2376,6 +2376,13 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         // Fresh per recording, same lifecycle as audioRecorder above - see
         // VoiceIsolationProcessor's class doc for why it can't be a shared/static instance.
         private VoiceIsolationProcessor voiceIsolationProcessor;
+        // Set in prepareEncoder() based on which encoding the AudioRecord constructor actually
+        // accepted - ENCODING_PCM_FLOAT is preferred (see FINDINGS.md's audio input-capability
+        // investigation) but isn't universally guaranteed for the record direction the way it is
+        // for playback, so this drives every byte<->sample conversion below rather than being
+        // assumed. audioBytesPerSample follows from it (4 for float, 2 for 16-bit).
+        private boolean audioCaptureIsFloat;
+        private int audioBytesPerSample;
         private NoiseSuppressor audioNoiseSuppressor;
         private AutomaticGainControl audioAutomaticGainControl;
         private AcousticEchoCanceler audioEchoCanceler;
@@ -2438,19 +2445,36 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         byteBuffer.rewind();
                         readResult = audioRecorder.read(byteBuffer, 2048);
                         if (readResult > 0) {
-                            if (voiceIsolationProcessor != null) {
-                                voiceIsolationProcessor.process(byteBuffer, readResult);
+                            if (audioCaptureIsFloat) {
+                                if (voiceIsolationProcessor != null) {
+                                    voiceIsolationProcessor.processFloat(byteBuffer, readResult);
+                                }
+                                PixelGramSettings.applyMicGainFloat(byteBuffer, readResult);
+                            } else {
+                                if (voiceIsolationProcessor != null) {
+                                    voiceIsolationProcessor.process(byteBuffer, readResult);
+                                }
+                                PixelGramSettings.applyMicGain(byteBuffer, readResult);
                             }
-                            PixelGramSettings.applyMicGain(byteBuffer, readResult);
                         }
                         if (readResult > 0 && a % 2 == 0) {
                             byteBuffer.limit(readResult);
                             double s = 0;
-                            for (int i = 0; i < readResult / 2; i++) {
-                                short p = byteBuffer.getShort();
-                                s += p * p;
+                            if (audioCaptureIsFloat) {
+                                // Rescaled by 32768 so the RMS lands on the same magnitude the
+                                // UI has always expected from the 16-bit path below - the signal
+                                // itself is unchanged, only its container is.
+                                for (int i = 0; i < readResult / 4; i++) {
+                                    float p = byteBuffer.getFloat() * 32768f;
+                                    s += p * p;
+                                }
+                            } else {
+                                for (int i = 0; i < readResult / 2; i++) {
+                                    short p = byteBuffer.getShort();
+                                    s += p * p;
+                                }
                             }
-                            double amplitude = Math.sqrt(s / readResult / 2);
+                            double amplitude = Math.sqrt(s / readResult / audioBytesPerSample);
                             AndroidUtilities.runOnUIThread(() -> NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordProgressChanged, recordingGuid, amplitude));
                             byteBuffer.position(0);
                         }
@@ -2477,7 +2501,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         buffer.offset[a] = timestamp;
 
                         buffer.read[a] = readResult;
-                        int bufferDurationUs = 1000000 * readResult / audioSampleRate / 2;
+                        int bufferDurationUs = 1000000 * readResult / audioSampleRate / audioBytesPerSample;
                         if (!shouldUseTimestamp) {
                             audioPresentationTimeUs += bufferDurationUs;
                         }
@@ -2725,12 +2749,33 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                                     buffersToWrite.clear();
                                     break;
                                 }
-                                if (inputBuffer.remaining() < input.read[a]) {
+                                // The AAC encoder's input buffer is always raw 16-bit PCM
+                                // (MediaCodec audio encoders don't accept a float input format,
+                                // regardless of what AudioRecord captured in) - encoderBytes is
+                                // the actual byte count this iteration will write there, which
+                                // is half of input.read[a] when the source is float (4B/sample
+                                // in, 2B/sample out). This is the single, one-time quantization
+                                // to 16-bit the float capture path was switched to for - see
+                                // FINDINGS.md's audio input-capability investigation.
+                                int encoderBytes = audioCaptureIsFloat ? input.read[a] / 2 : input.read[a];
+                                if (inputBuffer.remaining() < encoderBytes) {
                                     input.lastWroteBuffer = a;
                                     input = null;
                                     break;
                                 }
-                                inputBuffer.put(input.buffer[a]);
+                                if (audioCaptureIsFloat) {
+                                    ByteBuffer src = input.buffer[a];
+                                    int floatSamples = input.read[a] / 4;
+                                    for (int s = 0; s < floatSamples; s++) {
+                                        float v = src.getFloat(s * 4);
+                                        int iv = Math.round(v * 32768f);
+                                        if (iv > Short.MAX_VALUE) iv = Short.MAX_VALUE;
+                                        else if (iv < Short.MIN_VALUE) iv = Short.MIN_VALUE;
+                                        inputBuffer.putShort((short) iv);
+                                    }
+                                } else {
+                                    inputBuffer.put(input.buffer[a]);
+                                }
                             }
                             if (a >= input.results - 1) {
                                 buffersToWrite.remove(input);
@@ -3559,7 +3604,14 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             setBluetoothScoOn(true);
 
             try {
-                int recordBufferSize = AudioRecord.getMinBufferSize(audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                // ENCODING_PCM_FLOAT preferred - see FINDINGS.md's audio input-capability
+                // investigation: confirmed accepted on the dev device, but the platform docs
+                // don't guarantee it for the record direction the way they do for playback, so
+                // this falls back to PCM_16BIT (the previous behavior) if construction doesn't
+                // actually initialize. audioCaptureIsFloat/audioBytesPerSample drive every
+                // downstream byte<->sample conversion in this class, rather than assuming float.
+                int probeEncoding = AudioFormat.ENCODING_PCM_FLOAT;
+                int recordBufferSize = AudioRecord.getMinBufferSize(audioSampleRate, AudioFormat.CHANNEL_IN_MONO, probeEncoding);
                 if (recordBufferSize <= 0) {
                     recordBufferSize = 3584;
                 }
@@ -3593,7 +3645,22 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 skippedFirst = false;
                 skippedTime = 0;
 
-                audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+                audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), audioSampleRate, AudioFormat.CHANNEL_IN_MONO, probeEncoding, bufferSize);
+                if (audioRecorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                    PixelCameraLog.w("AudioRecord rejected ENCODING_PCM_FLOAT, falling back to PCM_16BIT");
+                    audioRecorder.release();
+                    int fallbackBufferSize = AudioRecord.getMinBufferSize(audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+                    if (fallbackBufferSize <= 0) fallbackBufferSize = 3584;
+                    if (bufferSize < fallbackBufferSize) {
+                        bufferSize = ((fallbackBufferSize / 2048) + 1) * 2048 * 2;
+                    }
+                    audioRecorder = new AudioRecord(PixelGramSettings.getVoiceEnhancementAudioSource(), audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+                    audioCaptureIsFloat = false;
+                } else {
+                    audioCaptureIsFloat = true;
+                }
+                audioBytesPerSample = audioCaptureIsFloat ? 4 : 2;
+                PixelCameraLog.d("round-video audio capture format: " + (audioCaptureIsFloat ? "PCM_FLOAT" : "PCM_16BIT (fallback)"));
                 voiceIsolationProcessor = new VoiceIsolationProcessor(audioSampleRate);
                 // Each effect is independently gated on its own setting and isAvailable() check.
                 // Actual enabled state is read back via getEnabled() (not assumed from the
@@ -3758,6 +3825,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " noiseSuppression:" + noiseSuppressionActuallyEnabled
                             + " agc:" + agcActuallyEnabled
                             + " echoCancellation:" + echoCancellationActuallyEnabled
+                            + " audioCapture:" + (audioCaptureIsFloat ? "float" : "pcm16")
                             + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x"
                             + " micDirection:" + (currentMicDirection != null ? currentMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
                             + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")"

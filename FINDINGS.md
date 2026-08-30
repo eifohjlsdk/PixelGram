@@ -634,6 +634,66 @@ returns in some other form, is snapping each kept frame's output PTS to the near
 of the *target* rate rather than passing the raw pre-decimation timestamp through - not implemented
 here since it became moot once the exposure cap itself was reverted.
 
+## Audio input capabilities and float capture (2026-08-30)
+
+Same logic as the video supersampling work: round video previously captured audio at exactly
+what the encoder needs (16-bit PCM, 48kHz mono), leaving no headroom for the DSP chain (voice
+isolation bandpass/gate, then up to 5x mic gain) ahead of it. Investigated the input path's real
+headroom before changing anything - see `PixelCapsDump.dumpAudioInputCapabilities()`.
+
+**Native mic rate**: `AudioDeviceInfo.getSampleRates()` on the built-in mic reports `[48000]` - a
+single declared value, not "arbitrary" (an empty array) and not a higher rate we're downsampling
+from. 48kHz is the platform's own native rate for this mic, not a resampled target. Requesting
+96kHz/192kHz is accepted (AudioFlinger upsamples transparently), but since the mic's native rate is
+exactly 48000, that headroom is synthetic - not pursued.
+
+**Format headroom, confirmed available**: `ENCODING_PCM_FLOAT`, `PCM_24BIT_PACKED`, and `PCM_32BIT`
+all construct successfully (`STATE_INITIALIZED`) at 48kHz mono on this device. Float was chosen
+since the DSP chain already works in float internally (see `VoiceIsolationProcessor`'s class doc).
+
+**Channels**: the physical mic reports `channelCounts=[1,2,3,4]` and both PCM_16BIT and PCM_FLOAT
+stereo construction succeed. Not acted on - confirming whether a multi-channel stream carries
+distinct per-channel content or duplicated mono requires an actual live capture-and-compare, which
+the capability dump deliberately doesn't do (construct-only, no live audio - see its class doc).
+Flagged as an unexplored avenue, not a finding either way.
+
+**`AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED` = `"true"`**, and constructing with
+`AudioSource.UNPROCESSED` succeeds. Added as a 5th Voice Enhancement option (gated on that property
+being present, unlike the other 4 options which have no equivalent query), since it's the only
+source the platform documents as genuinely unprocessed - no AGC/NS/AEC applied ahead of the app.
+
+**Implementation**: switched round-video capture (`InstantCameraView`, not the separate
+voice-message recorder in `MediaController` - see below) to `ENCODING_PCM_FLOAT`, with a runtime
+fallback to PCM_16BIT if construction doesn't actually report `STATE_INITIALIZED` (the platform
+docs don't guarantee float for the *record* direction the way they do for playback, so this isn't
+assumed even though it's confirmed available on the dev device). This surfaced a bigger issue than
+a one-line format swap: `VoiceIsolationProcessor.process()` and `PixelGramSettings.applyMicGain()`
+were each already converting to float internally, doing their DSP, and quantizing *back* to int16
+before handing off to the next stage - meaning the signal was round-tripping through 16-bit twice
+between capture and the encoder, not once. Added float-native `processFloat()`/`applyMicGainFloat()`
+overloads (sharing the same DSP math via a new `filterOneSample()` helper in
+`VoiceIsolationProcessor`) so the signal now stays in float from capture through both DSP stages.
+The MediaCodec AAC encoder's input buffer only accepts 16-bit PCM regardless of capture format, so
+quantization to int16 now happens exactly once, at that hand-off, converting from float there
+instead of a raw byte copy. Also updated every byte/sample-count-dependent calculation this
+touches (buffer duration accounting, the RMS amplitude meter, encoder buffer sizing) to be
+bytes-per-sample-aware rather than hardcoding 2. Added `audioCapture:float`/`pcm16` to the
+recording marker line.
+
+**Not applied to voice messages.** `VoiceIsolationProcessor`/`applyMicGain` are shared with
+`MediaController`'s separate voice-message recorder, which also captures 16-bit PCM at 48kHz mono
+- but that path feeds a native JNI Opus encoder and drives the waveform-preview UI, both deep,
+heavily-used stock Telegram code unrelated to anything this fork added. Left it on the existing
+int16 `process()`/`applyMicGain()` methods; the new float-native overloads are available if that
+path is converted later.
+
+**Verified with a real recording**, not just a clean compile: marker line confirmed
+`audioCapture:float` was actually active, and the resulting file decodes cleanly (`ffmpeg -f null`,
+zero errors), 48kHz mono as expected, sample values well within range (-11701..13266 of ±32768,
+zero near-full-scale samples - no clipping or garbage), DC offset ~0, peak/RMS levels sane
+(-7.9dBFS peak, -25.5dBFS RMS). No sign of the corruption a float/int16 byte-count mismatch would
+have produced.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
