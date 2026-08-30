@@ -48,6 +48,13 @@ import java.nio.ByteOrder;
  * silently truncated from the tail of each recording - no flush() exists to avoid it). Both are
  * one-off, bounded, and far less audible than the per-chunk splice this replaced; revisit only if
  * either turns out audible in practice.
+ *
+ * Wet/dry blend: PixelGramSettings.getSpeechEnhancementWetFraction() controls how much of
+ * RNNoise's output vs. the original raw signal ends up in the final result (applied once per
+ * completed block, right after the native call). At less than 100% wet, anything RNNoise fully
+ * suppresses - background music, or quiet word-endings/breath it misclassifies as noise - comes
+ * back at a fixed, predictable attenuation instead of disappearing outright. See
+ * PixelGramSettings' field doc and FINDINGS.md for why this is a flat ratio, not time-varying.
  */
 public class SpeechEnhancer {
 
@@ -108,11 +115,22 @@ public class SpeechEnhancer {
                     nativeScratch.putFloat(k * 4, pendingRaw[k]);
                 }
                 nativeProcessFrame(nativeHandle, nativeScratch, 0);
+                // Wet/dry blend: content RNNoise fully suppresses (denoised~0) reappears at
+                // (1-wet) of its original amplitude instead of disappearing outright - a fixed,
+                // predictable attenuation (20*log10(1-wet) dB), not elimination. Read live per
+                // block (not cached) so an in-recording setting change takes effect immediately,
+                // same convention as the rest of this package. See PixelGramSettings' field doc
+                // and FINDINGS.md for why this is a flat ratio rather than time-varying for now.
+                // pendingRaw[k] is still the pre-denoise sample here - only pendingCount (the
+                // logical "how many are filled" counter, not the array contents) gets reset below.
+                float wet = PixelGramSettings.getSpeechEnhancementWetFraction();
+                float dry = 1f - wet;
                 int spaceLeft = READY_CAPACITY - readyCount;
                 int enqueue = Math.min(FRAME_SIZE, spaceLeft);
                 int writeStart = (readyHead + readyCount) % READY_CAPACITY;
                 for (int k = 0; k < enqueue; k++) {
-                    readyDenoised[(writeStart + k) % READY_CAPACITY] = nativeScratch.getFloat(k * 4);
+                    float denoised = nativeScratch.getFloat(k * 4);
+                    readyDenoised[(writeStart + k) % READY_CAPACITY] = wet * denoised + dry * pendingRaw[k];
                 }
                 readyCount += enqueue;
                 // If the ready queue is somehow already full (shouldn't happen with

@@ -70,6 +70,17 @@ public class PixelGramSettings {
     public static final int SPEECH_ENHANCEMENT_OFF = 0;
     public static final int SPEECH_ENHANCEMENT_RNNOISE = 1;
 
+    /** Wet/dry blend applied after RNNoise, before Voice Isolation - see SpeechEnhancer.process().
+     * 100% is pure RNNoise output; anything less mixes back a fraction of the original signal, so
+     * content RNNoise fully suppresses (background music, misclassified quiet word-endings/breath)
+     * reappears attenuated by a fixed, predictable amount (20*log10(1-wet) dB) instead of
+     * disappearing outright - a simple fixed-ratio blend, not time-varying (see FINDINGS.md for
+     * why that's the right starting lever, and the RNNoise VAD-probability-driven alternative
+     * worth trying later). Defaults to 90% based on early listening (100% has audible music
+     * elimination and eaten word-endings); settled on 70% after listening across the full range
+     * (see FINDINGS.md) - 60/50 added for further tuning below that. */
+    public static final float[] SPEECH_ENHANCEMENT_WET_VALUES = {1.0f, 0.9f, 0.8f, 0.7f, 0.6f, 0.5f};
+
     /** Gate threshold choices, in dBFS against the pre-gain raw signal (this runs before mic
      * gain - see VoiceIsolationProcessor) - not the post-chain levels in FINDINGS.md's audio
      * matrix, which were measured after gain. */
@@ -114,6 +125,7 @@ public class PixelGramSettings {
     private static final String KEY_MIC_FIELD_DIMENSION = "mic_field_dimension";
     private static final String KEY_VOICE_ISOLATION_MODE = "voice_isolation_mode";
     private static final String KEY_SPEECH_ENHANCEMENT_MODE = "speech_enhancement_mode";
+    private static final String KEY_SPEECH_ENHANCEMENT_WET = "speech_enhancement_wet";
     private static final String KEY_GATE_THRESHOLD_DB = "voice_isolation_gate_threshold_db";
     private static final String KEY_DOWNSCALE_FILTER = "downscale_filter_mode";
     private static final String KEY_DITHER_AMOUNT_LSB = "dither_amount_lsb";
@@ -171,6 +183,11 @@ public class PixelGramSettings {
     public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_BANDPASS_GATE;
     public static final float DEFAULT_GATE_THRESHOLD_DB = -45f;
     public static final int DEFAULT_SPEECH_ENHANCEMENT_MODE = SPEECH_ENHANCEMENT_OFF;
+    // 90% was the initial guess before listening; settled on 70% after A/B'ing the full range -
+    // 100%/90%/80% all had audible word-ending clipping and full background-music elimination to
+    // varying degrees, 70% was the point where word endings survive and background is attenuated
+    // rather than erased. See FINDINGS.md's speech enhancement section.
+    public static final float DEFAULT_SPEECH_ENHANCEMENT_WET = 0.7f;
     public static final int DEFAULT_DOWNSCALE_FILTER = DOWNSCALE_FILTER_LANCZOS;
     // In multiples of 1/255 (one 8-bit LSB), applied as +-0.5x this value. 0 = off. Matches what
     // shipped without a setting (1x = +-0.5 LSB) as the default so existing recordings don't
@@ -463,6 +480,14 @@ public class PixelGramSettings {
         prefs().edit().putInt(KEY_SPEECH_ENHANCEMENT_MODE, mode).apply();
     }
 
+    public static float getSpeechEnhancementWetFraction() {
+        return prefs().getFloat(KEY_SPEECH_ENHANCEMENT_WET, DEFAULT_SPEECH_ENHANCEMENT_WET);
+    }
+
+    public static void setSpeechEnhancementWetFraction(float wet) {
+        prefs().edit().putFloat(KEY_SPEECH_ENHANCEMENT_WET, wet).apply();
+    }
+
     public static float getVoiceIsolationGateThresholdDb() {
         return prefs().getFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB);
     }
@@ -574,6 +599,7 @@ public class PixelGramSettings {
                 .putInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE)
                 .putFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB)
                 .putInt(KEY_SPEECH_ENHANCEMENT_MODE, DEFAULT_SPEECH_ENHANCEMENT_MODE)
+                .putFloat(KEY_SPEECH_ENHANCEMENT_WET, DEFAULT_SPEECH_ENHANCEMENT_WET)
                 .putInt(KEY_DOWNSCALE_FILTER, DEFAULT_DOWNSCALE_FILTER)
                 .putFloat(KEY_DITHER_AMOUNT_LSB, DEFAULT_DITHER_AMOUNT_LSB)
                 .apply();

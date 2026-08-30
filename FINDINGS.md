@@ -933,6 +933,89 @@ branch (never pushed, not merged into `main`) for a private, personal-use-only e
 distribution obligations under GPL don't attach to a build that's never distributed, but that
 branch must stay off `main` and unpublished for that to hold.
 
+## RNNoise: the per-chunk splice bug, the three-way result, and settling on a 70% wet/dry blend (2026-08-30)
+
+Full record of testing the RNNoise selector added above, in the order it actually happened -
+including a real bug this testing caught before it shipped.
+
+**A real, audible bug in the first implementation.** The initial `SpeechEnhancer.process()`
+denoised only the first complete 480-sample block of whatever chunk it was given and left the
+remainder (32 of every 512 samples for round video) untouched - a deliberate tradeoff, documented
+in the code as "revisit only if this turns out audible." It turned out audible: reported as
+"cracking," "robotic," background and voice both affected. The mechanism is a genuine
+denoised/raw level-and-spectral discontinuity every ~10.67ms (matching round video's chunk rate) -
+not a general RNNoise quality issue. Fixed with a proper two-queue design
+(`pendingRaw`/`readyDenoised`, the latter a circular buffer sized for more than one block's worth
+of backlog - a single-block buffer was tried first and found insufficient, since round video's
+512-sample chunks let a second block complete within a single call roughly every ~160ms) that
+denoises every sample exactly once, in order, at the cost of a small constant end-to-end delay
+(under 10ms) instead of a periodic splice. Confirmed by re-listening: "robotic gone now, sounds
+good." Both the buggy and pre-fix comparison recordings were discarded and redone.
+
+**Three-way comparison, fixed build, quiet room:**
+
+| config | SNR (p90/p10, bandpassed) | noise floor (p10) |
+|---|---|---|
+| A: baseline (denoiser off, production defaults: Bandpass+Gate, 5x gain) | 25.1dB | 145.4 (-47.1dBFS) |
+| B: denoiser stacked on that same chain | 52.9dB | 7.7 (-72.6dBFS) |
+| C: denoiser-only (Voice Isolation off, 1x gain) | 53.7dB | 1.7 (-85.5dBFS) |
+
+B and C are effectively the same by this metric, both ~28dB above baseline - **the existing
+bandpass/gate/gain chain adds no measurable benefit once RNNoise is active**, confirming the
+hypothesis this comparison was built to test.
+
+**But the SNR ratio alone was misleading about *why* C measured (marginally) better than B, and
+that mattered.** Absolute noise-floor levels told the real story: C's floor (-85.5dBFS) sits within
+~5-10dB of 16-bit PCM's own quantization noise limit (roughly -90 to -96dBFS) - 20% of C's 50ms
+windows fell below -80dBFS, vs. 2% for both A and B. That's not "quieter room," that's pushed to
+near-digital-silence - a ratio that inflates as its denominator approaches zero, exactly as
+predicted before measuring. Listening confirmed the practical consequence at 100% wet: background
+music was eliminated outright (more aggressive than the attenuate-don't-eliminate behavior of
+comparable commercial noise suppression), and quiet trailing consonants/breath at the ends of words
+were getting clipped - RNNoise misclassifying them as noise, with nothing to fall back on since
+RNNoise exposes no attack/release/threshold controls to soften that.
+
+**Fix: a wet/dry blend, added as a Denoiser Strength setting** (100/90/80/70/60/50%,
+`SpeechEnhancer.process()`, applied once per completed block right after the native call). At
+`wet < 100%`, anything RNNoise fully suppresses reappears at `(1-wet)` of its original amplitude -
+a fixed, predictable attenuation (`20*log10(1-wet)` dB) instead of elimination. Chose a **flat
+per-block ratio over a time-varying blend** for the initial implementation: it directly produces
+the "attenuate, don't erase" behavior wanted, in a form simple enough to A/B at discrete steps.
+Noted for later: `rnnoise_process_frame()` returns a per-frame VAD probability that this
+implementation currently discards - modulating the wet fraction by that (more dry specifically on
+frames RNNoise itself is least confident are speech, which is exactly where the misclassified
+word-endings live) is a principled, RNNoise-native way to make the blend time-varying if a flat
+ratio turns out not to be precise enough - not implemented, since a working flat baseline was the
+right thing to validate first.
+
+**A/B'd across the full range; settled on 70%.** 100/90/80% all showed some combination of audible
+word-ending clipping and background elimination in listening tests. 70% was the point where word
+endings survive and background is present-but-reduced rather than erased - matching the intended
+behavior. Changed `DEFAULT_SPEECH_ENHANCEMENT_WET` from the initial 90% guess to 70% on this basis;
+added 60%/50% steps below it for further tuning.
+
+**Measured SNR at 70%: 25.9dB - essentially back to the pre-denoiser baseline (25.1dB), and that's
+expected, not a sign 70% isn't working.** Blending 30% of the original signal back in means content
+RNNoise would otherwise erase comes back at `20*log10(0.3) ≈ -10.5dB` rather than near-silence, so
+the noise floor is no longer being pushed toward the quantization limit the way it was at higher
+wet fractions - which is exactly what removes the audible artifacts. This is the SNR-ratio
+limitation flagged above showing up directly: the metric mostly reflects how close the floor gets
+to zero, not whether speech itself got cleaner, so it can't distinguish "still doing real,
+well-behaved suppression" from "back to doing nothing" at this operating point. Listening is the
+right instrument here, not this metric - recorded plainly rather than spun as either a win or a
+null result by the number alone.
+
+(Methodology note: the 70%/80% test recordings weren't distinguishable by a logged per-file tag -
+the marker line records when a recording *started*, not which saved file resulted. Identified by
+the direction the noise floor should move - 70% wet lets more raw signal back in, so should show a
+*higher* floor than 80% - rather than direct correlation, so this is an inference, not a
+certainty.)
+
+**Open**: this whole comparison was done in a quiet room, where RNNoise still found real noise to
+remove - but whether the three-way equivalence (denoiser-only vs. denoiser-stacked) and the chosen
+70% wet fraction both hold up in a noisier environment (café, traffic) is untested. A quiet room is
+the easy case for a denoiser; flagged rather than assumed to generalize.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

@@ -3850,7 +3850,8 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " micDirection:" + (currentMicDirection != null ? currentMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
                             + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")"
                             + " voiceIsolation:" + PixelGramSettings.getVoiceIsolationMode() + " gateThreshold:" + PixelGramSettings.getVoiceIsolationGateThresholdDb()
-                            + " speechEnhancement:" + (speechEnhancer != null ? PixelGramSettings.getSpeechEnhancementMode() : "off(unavailable)"));
+                            + " speechEnhancement:" + (speechEnhancer != null ? PixelGramSettings.getSpeechEnhancementMode() : "off(unavailable)")
+                            + " denoiserWet:" + PixelGramSettings.getSpeechEnhancementWetFraction());
                 }
 
                 AndroidUtilities.runOnUIThread(() -> {

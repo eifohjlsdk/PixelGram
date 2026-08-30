@@ -92,6 +92,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int voiceIsolationRow;
     private int gateThresholdRow;
     private int speechEnhancementRow;
+    private int denoiserStrengthRow;
     private int divider3Row;
 
     private int resetRow;
@@ -158,6 +159,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
         voiceIsolationRow = rowCount++;
         gateThresholdRow = rowCount++;
         speechEnhancementRow = rowCount++;
+        denoiserStrengthRow = rowCount++;
         divider3Row = rowCount++;
 
         resetRow = rowCount++;
@@ -259,6 +261,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 showGateThresholdDialog();
             } else if (position == speechEnhancementRow) {
                 showSpeechEnhancementDialog();
+            } else if (position == denoiserStrengthRow) {
+                showDenoiserStrengthDialog();
             } else if (position == resetRow) {
                 showResetDialog();
             } else if (position == checkNowRow) {
@@ -474,6 +478,23 @@ public class PixelGramSettingsActivity extends BaseFragment {
         };
         boolean[] supported = {true, true};
         showModeDialog("Speech Enhancement", names, values, supported, speechEnhancementRow, PixelGramSettings::setSpeechEnhancementMode);
+    }
+
+    /** Wet/dry blend after RNNoise - see SpeechEnhancer's class doc. Float values, same reason as
+     * showGateThresholdDialog for a plain setItems dialog rather than showModeDialog. */
+    private void showDenoiserStrengthDialog() {
+        float[] values = PixelGramSettings.SPEECH_ENHANCEMENT_WET_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            options[i] = formatDenoiserStrength(values[i]) + (values[i] == PixelGramSettings.DEFAULT_SPEECH_ENHANCEMENT_WET ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Denoiser Strength");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setSpeechEnhancementWetFraction(values[which]);
+            listAdapter.notifyItemChanged(denoiserStrengthRow);
+        });
+        showDialog(builder.create());
     }
 
     /** Threshold is a float, not one of showModeDialog's int values, same reason as
@@ -696,6 +717,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
         }
     }
 
+    private static String formatDenoiserStrength(float wet) {
+        return Math.round(wet * 100) + "% wet";
+    }
+
 
     private static String downscaleFilterName(int filter) {
         switch (filter) {
@@ -751,7 +776,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == micDirectionRow && PixelGramSettings.isMicDirectionSupported())
                     || (pos == micFieldDimensionRow && PixelGramSettings.isMicFieldDimensionSupported())
                     || pos == voiceIsolationRow || pos == gateThresholdRow
-                    || pos == speechEnhancementRow
+                    || pos == speechEnhancementRow || pos == denoiserStrengthRow
                     || pos == resetRow || pos == checkNowRow;
         }
 
@@ -847,7 +872,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     } else if (position == gateThresholdRow) {
                         cell.setTextAndValue("Gate Threshold", formatGateThreshold(PixelGramSettings.getVoiceIsolationGateThresholdDb()), false);
                     } else if (position == speechEnhancementRow) {
-                        cell.setTextAndValue("Speech Enhancement", speechEnhancementName(PixelGramSettings.getSpeechEnhancementMode()), false);
+                        cell.setTextAndValue("Speech Enhancement", speechEnhancementName(PixelGramSettings.getSpeechEnhancementMode()), true);
+                    } else if (position == denoiserStrengthRow) {
+                        cell.setTextAndValue("Denoiser Strength", formatDenoiserStrength(PixelGramSettings.getSpeechEnhancementWetFraction()), false);
                     } else if (position == resetRow) {
                         cell.setCanDisable(true);
                         cell.setTextColor(Theme.getColor(Theme.key_text_RedRegular));
