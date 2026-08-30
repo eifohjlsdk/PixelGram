@@ -415,6 +415,24 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         if (BuildVars.DEBUG_VERSION && getIntent() != null && getIntent().getBooleanExtra("pixelcaps_dump", false)) {
             PixelCapsDump.run(getApplicationContext());
         }
+        // Same one-off pattern, but this one does a brief LIVE multi-channel capture (unlike
+        // run() above, which never starts a capture) - see PixelCapsDump.runChannelTest()'s doc.
+        // Run off the main thread since it blocks for ~2s of actual recording.
+        //   adb shell am start -n org.telegram.messenger.beta/org.telegram.ui.LaunchActivity --ez pixelcaps_channel_test true
+        if (BuildVars.DEBUG_VERSION && getIntent() != null && getIntent().getBooleanExtra("pixelcaps_channel_test", false)) {
+            final Context appContext = getApplicationContext();
+            new Thread(() -> PixelCapsDump.runChannelTest(appContext), "PixelCapsChannelTest").start();
+        }
+        // Same pattern, ~5s live capture under a chosen mono/multi-channel config - value is
+        // one of "mono_camcorder"/"mono_mic"/"4ch", see PixelCapsDump.runMicComparisonTest().
+        //   adb shell am start -n org.telegram.messenger.beta/org.telegram.ui.LaunchActivity --es pixelcaps_mic_test mono_camcorder
+        {
+            String micTestConfig = getIntent() != null ? getIntent().getStringExtra("pixelcaps_mic_test") : null;
+            if (BuildVars.DEBUG_VERSION && micTestConfig != null) {
+                final Context appContext = getApplicationContext();
+                new Thread(() -> PixelCapsDump.runMicComparisonTest(appContext, micTestConfig), "PixelCapsMicTest").start();
+            }
+        }
         AndroidUtilities.checkDisplaySize(this, getResources().getConfiguration());
         currentAccount = UserConfig.selectedAccount;
         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));

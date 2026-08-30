@@ -24,6 +24,8 @@ import android.util.Range;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.PrintWriter;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.List;
 
@@ -40,6 +42,16 @@ import java.util.List;
  * camera/codec/audio paths. Triggered only when explicitly requested (see
  * LaunchActivity's "pixelcaps_dump" intent-extra hook) - never runs as a side effect
  * of normal app usage.
+ *
+ * One exception to "starts no capture": runChannelTest() (a separate entry point, not part
+ * of run()/the dump above, own "pixelcaps_channel_test" intent-extra hook) does a brief real
+ * AudioRecord capture to test whether a multi-channel input actually carries distinct
+ * per-channel audio or duplicated mono - that question is only answerable by recording and
+ * comparing, not by any capability query. Still one-off/explicit-trigger-only like the rest
+ * of this class, just not construct-only. runMicComparisonTest() (own "pixelcaps_mic_test"
+ * string-extra hook, value selects the config) is the same kind of exception - records ~5s
+ * under a chosen mono/multi-channel AudioSource config to compare against the app's actual
+ * mono routing, per FINDINGS.md's mic-array follow-up.
  *
  * Logs every line under tag "PixelCaps" and additionally writes the same content to
  * <Downloads>/PixelCaps/pixelcaps_dump.txt (same public-Downloads approach the app
@@ -512,6 +524,254 @@ public class PixelCapsDump {
             case android.media.AudioDeviceInfo.TYPE_USB_DEVICE: return "USB_DEVICE(" + type + ")";
             default: return "TYPE(" + type + ")";
         }
+    }
+
+    // ---------------------------------------------------------------- channel duplication test
+
+    /** See the class doc's "one exception" note - this is the one method here that actually
+     * records. Captures ~2s of real audio, preferring a 4-channel raw index-mask request
+     * (channelIndexMask=15, matching what the built-in mic declared via
+     * AudioDeviceInfo.getChannelIndexMasks() in the dump above), falling back to positional
+     * CHANNEL_IN_STEREO if that doesn't initialize. Uses AudioSource.MIC rather than
+     * UNPROCESSED, since UNPROCESSED is commonly restricted to a single channel on-device and
+     * would defeat the point of this test. Writes the raw multi-channel capture to
+     * <Downloads>/PixelCaps/channel_test.wav for real analysis (waveform view, cross-correlation,
+     * whatever's needed) and logs a quick same-device sanity check: the mean/max absolute
+     * difference between channel 0 and every other channel - exactly 0 across the board would
+     * mean bit-identical/duplicated content; any real difference means the channels genuinely
+     * carry distinct signal. */
+    public static void runChannelTest(Context context) {
+        Log.d(TAG, "=== PixelCaps channel test: recording ~2s to compare channels for duplication ===");
+        int sampleRate = 48000;
+        int channelCount = 4;
+        AudioRecord record = null;
+        try {
+            AudioFormat format = new AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelIndexMask(0b1111) // 4 raw channels - see AudioDeviceInfo.getChannelIndexMasks() in the dump above
+                    .build();
+            int minBuf = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT);
+            if (minBuf <= 0) minBuf = 3584;
+            record = new AudioRecord.Builder()
+                    .setAudioSource(MediaRecorder.AudioSource.MIC)
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(minBuf * 4)
+                    .build();
+            if (record.getState() != AudioRecord.STATE_INITIALIZED) {
+                Log.w(TAG, "channel test: 4-channel index-mask capture didn't initialize, falling back to CHANNEL_IN_STEREO");
+                record.release();
+                channelCount = 2;
+                format = new AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                        .build();
+                record = new AudioRecord.Builder()
+                        .setAudioSource(MediaRecorder.AudioSource.MIC)
+                        .setAudioFormat(format)
+                        .setBufferSizeInBytes(minBuf * 4)
+                        .build();
+            }
+            if (record.getState() != AudioRecord.STATE_INITIALIZED) {
+                Log.e(TAG, "channel test: AudioRecord failed to initialize even with stereo fallback, aborting");
+                return;
+            }
+            Log.d(TAG, "channel test: capturing " + channelCount + " channel(s) at " + sampleRate + "Hz for 2s...");
+            record.startRecording();
+            logActiveMicrophones("channel test (" + channelCount + "ch, live)", record);
+            int frameCount = sampleRate * 2;
+            short[] interleaved = new short[frameCount * channelCount];
+            int totalRead = 0;
+            while (totalRead < interleaved.length) {
+                int r = record.read(interleaved, totalRead, interleaved.length - totalRead);
+                if (r <= 0) break;
+                totalRead += r;
+            }
+            record.stop();
+
+            int framesRead = totalRead / channelCount;
+            Log.d(TAG, "channel test: captured " + framesRead + " frames (" + channelCount + "ch)");
+            for (int ch = 1; ch < channelCount; ch++) {
+                long sumAbsDiff = 0;
+                long sumAbsCh0 = 0;
+                int maxDiff = 0;
+                for (int f = 0; f < framesRead; f++) {
+                    int s0 = interleaved[f * channelCount];
+                    int sN = interleaved[f * channelCount + ch];
+                    int diff = Math.abs(s0 - sN);
+                    sumAbsDiff += diff;
+                    sumAbsCh0 += Math.abs(s0);
+                    if (diff > maxDiff) maxDiff = diff;
+                }
+                double meanAbsDiff = framesRead > 0 ? (double) sumAbsDiff / framesRead : 0;
+                double meanAbsCh0 = framesRead > 0 ? (double) sumAbsCh0 / framesRead : 0;
+                Log.d(TAG, "channel test: ch0 vs ch" + ch + ": meanAbsDiff=" + meanAbsDiff + " maxDiff=" + maxDiff
+                        + " meanAbsCh0=" + meanAbsCh0 + " (0 everywhere = bit-identical/duplicated; nonzero = distinct content)");
+            }
+
+            writeWavFile("channel_test.wav", interleaved, totalRead, channelCount, sampleRate);
+        } catch (Exception e) {
+            Log.e(TAG, "channel test failed", e);
+        } finally {
+            if (record != null) {
+                try {
+                    record.release();
+                } catch (Exception ignore) {
+                }
+            }
+        }
+    }
+
+    private static void logActiveMicrophones(String label, AudioRecord record) {
+        try {
+            List<android.media.MicrophoneInfo> mics = record.getActiveMicrophones();
+            Log.d(TAG, label + ": getActiveMicrophones() (live, recording in progress), " + mics.size() + " mic(s):");
+            for (android.media.MicrophoneInfo mic : mics) {
+                Log.d(TAG, describeMicrophone(mic));
+            }
+        } catch (Exception e) {
+            Log.e(TAG, label + ": getActiveMicrophones() (live) failed", e);
+        }
+    }
+
+    /** Follow-up to runChannelTest(): now that 4 distinct channels are confirmed (not
+     * duplicated mono - see FINDINGS.md), tests whether any single channel from the raw
+     * 4-channel capture is measurably better than the mono routing the app actually uses
+     * today, under the real use condition (phone held at arm's length, front camera facing
+     * the talker, as in round video). Three configs, selected by `config`:
+     *   "mono_camcorder" - AudioSource.CAMCORDER mono, PixelGram's actual current production
+     *                      routing (see PixelGramSettings.DEFAULT_VOICE_ENHANCEMENT).
+     *   "mono_mic"       - AudioSource.MIC mono - a fair same-source baseline against the
+     *                      4-channel capture below, since AudioSource.CAMCORDER may apply its
+     *                      own platform-side gain staging that MIC doesn't, which would
+     *                      confound a direct mono-vs-per-channel comparison otherwise.
+     *   "4ch"            - AudioSource.MIC, 4-channel raw index-mask capture (same request as
+     *                      runChannelTest()) - per-channel comparison happens offline from the
+     *                      saved WAV, not on-device.
+     * Records ~5s (long enough for a few seconds of continuous speech) and writes
+     * mic_test_<config>.wav. Also logs getActiveMicrophones() geometry for direct comparison
+     * against the mono case, answering whether multi-channel capture surfaces anything mono
+     * doesn't. */
+    public static void runMicComparisonTest(Context context, String config) {
+        Log.d(TAG, "=== PixelCaps mic comparison test: config=" + config + ", recording ~5s - please speak continuously ===");
+        int sampleRate = 48000;
+        int channelCount = 1;
+        int audioSource;
+        AudioFormat format;
+        switch (config) {
+            case "mono_camcorder":
+                audioSource = MediaRecorder.AudioSource.CAMCORDER;
+                format = new AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                        .build();
+                break;
+            case "mono_mic":
+                audioSource = MediaRecorder.AudioSource.MIC;
+                format = new AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                        .build();
+                break;
+            case "4ch":
+                audioSource = MediaRecorder.AudioSource.MIC;
+                channelCount = 4;
+                format = new AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelIndexMask(0b1111)
+                        .build();
+                break;
+            default:
+                Log.e(TAG, "mic comparison test: unknown config \"" + config + "\"");
+                return;
+        }
+
+        AudioRecord record = null;
+        try {
+            int minBuf = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT);
+            if (minBuf <= 0) minBuf = 3584;
+            record = new AudioRecord.Builder()
+                    .setAudioSource(audioSource)
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(minBuf * 4)
+                    .build();
+            if (record.getState() != AudioRecord.STATE_INITIALIZED) {
+                Log.e(TAG, "mic comparison test (" + config + "): AudioRecord failed to initialize, aborting");
+                return;
+            }
+            record.startRecording();
+            logActiveMicrophones("mic comparison test (" + config + ")", record);
+
+            int frameCount = sampleRate * 5;
+            short[] interleaved = new short[frameCount * channelCount];
+            int totalRead = 0;
+            while (totalRead < interleaved.length) {
+                int r = record.read(interleaved, totalRead, interleaved.length - totalRead);
+                if (r <= 0) break;
+                totalRead += r;
+            }
+            record.stop();
+
+            int framesRead = totalRead / channelCount;
+            Log.d(TAG, "mic comparison test (" + config + "): captured " + framesRead + " frames (" + channelCount + "ch)");
+            writeWavFile("mic_test_" + config + ".wav", interleaved, totalRead, channelCount, sampleRate);
+        } catch (Exception e) {
+            Log.e(TAG, "mic comparison test (" + config + ") failed", e);
+        } finally {
+            if (record != null) {
+                try {
+                    record.release();
+                } catch (Exception ignore) {
+                }
+            }
+        }
+    }
+
+    private static void writeWavFile(String filename, short[] interleaved, int totalSamples, int channelCount, int sampleRate) {
+        try {
+            File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "PixelCaps");
+            if (!dir.exists() && !dir.mkdirs()) {
+                Log.w(TAG, "could not create output dir " + dir);
+            }
+            File out = new File(dir, filename);
+            int dataBytes = totalSamples * 2;
+            int byteRate = sampleRate * channelCount * 2;
+            int blockAlign = channelCount * 2;
+            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(out, "rw")) {
+                raf.setLength(0);
+                raf.writeBytes("RIFF");
+                raf.write(leInt(36 + dataBytes));
+                raf.writeBytes("WAVE");
+                raf.writeBytes("fmt ");
+                raf.write(leInt(16));
+                raf.write(leShort((short) 1));
+                raf.write(leShort((short) channelCount));
+                raf.write(leInt(sampleRate));
+                raf.write(leInt(byteRate));
+                raf.write(leShort((short) blockAlign));
+                raf.write(leShort((short) 16));
+                raf.writeBytes("data");
+                raf.write(leInt(dataBytes));
+                ByteBuffer bb = ByteBuffer.allocate(dataBytes).order(ByteOrder.LITTLE_ENDIAN);
+                for (int i = 0; i < totalSamples; i++) bb.putShort(interleaved[i]);
+                raf.write(bb.array());
+            }
+            Log.d(TAG, "wrote " + out.getAbsolutePath() + " (" + channelCount + "ch, " + sampleRate + "Hz, " + (totalSamples / channelCount) + " frames)");
+        } catch (Exception e) {
+            Log.e(TAG, "failed to write wav " + filename, e);
+        }
+    }
+
+    private static byte[] leInt(int v) {
+        return new byte[]{(byte) (v & 0xff), (byte) ((v >> 8) & 0xff), (byte) ((v >> 16) & 0xff), (byte) ((v >> 24) & 0xff)};
+    }
+
+    private static byte[] leShort(short v) {
+        return new byte[]{(byte) (v & 0xff), (byte) ((v >> 8) & 0xff)};
     }
 
     // ---------------------------------------------------------------- output

@@ -722,6 +722,84 @@ resized to `960 * audioBytesPerSample` for float (3840 bytes), it would fill at 
 time in float mode, and every non-final flush would get zero-padded mid-recording, splicing
 silence into the audio. Now reallocated per-recording, sized to the actual chosen format.
 
+## The 4 declared input channels carry distinct audio, not duplicated mono (2026-08-30)
+
+`AudioDeviceInfo` reports `channelCounts=[1,2,3,4]` for the built-in mic (see the audio
+input-capability investigation above) - worth checking directly whether that's 4 genuinely
+distinct capsules or one signal duplicated across channels in software, since only the former is
+useful for anything. Added `PixelCapsDump.runChannelTest()` (a documented exception to the class's
+usual construct-only contract - this one actually records ~2s via `AudioRecord.Builder` with
+`channelIndexMask=0b1111`, matching the device's declared `channelIndexMasks`) and compared
+channels directly, then via a WAV pulled off-device.
+
+**Not duplicated.** No channel pair is bit-identical. RMS differs meaningfully per channel (761,
+482, 488, 405 in one ambient-room capture) and cross-correlation against channel 0 ranges from 0.10
+to 0.82 depending on the pair - exactly the signature of physically-separated real microphones
+picking up the same acoustic environment with different attenuation/phase/shadowing, not a
+software copy (which would show identical RMS and correlation ≈1.0 on every pair). This overturns
+the earlier "only one microphone is accessible" conclusion from prior mic-direction/field-dimension
+work - see the follow-up immediately below for what (if anything) that's actually good for.
+
+## Four-mic array: distinct channels confirmed, but none beats current mono routing - UNDER REVISION (2026-08-30)
+
+Follow-up to the channel-duplication test above. Investigated what's actually reachable now that 4
+distinct capsules are confirmed, before touching anything - then tested the simplest hypothesis
+directly.
+
+**Physical correspondence and channel order: not documented, and only weakly inferable.**
+`AudioDeviceInfo.getChannelIndexMasks()`'s raw index-channel ordering has no public,
+vendor-independent specification - it's whatever order the HAL exposes, and nothing in the
+platform API guarantees a stable or documented mapping from index to physical capsule. The
+correlation pattern from the duplication test (ch0-ch3 at 0.82, ch0-ch1 at 0.39, ch0-ch2 at 0.10)
+is suggestive of relative physical proximity (closer mics should be more correlated against the
+same ambient sound) but this is inference from one uncontrolled ambient recording, not a
+confirmed mapping - not treated as fact.
+
+**`MicrophoneInfo` geometry is unreliable for the multi-channel case, and inconsistent even for
+the existing 2-mic mono case.** `AudioRecord.getActiveMicrophones()` during the round-video hook
+(2-channel default mono routing) returned real position/orientation data in one run - `id=21
+address="bottom" position=(0.0269, 0.0058, 0.0079) orientation=(0,0,1)` and `id=22 address="back"
+position=(0.0546, 0.1456, 0.00415) orientation=(0,1,0)` - but a later run of the *same* hook
+returned `id=22` with `position=UNKNOWN orientation=UNKNOWN`, meaning this data isn't reliably
+populated even outside the new multi-channel path. Worse, during the actual 4-channel capture,
+`getActiveMicrophones()` reported only **one** mic (`id=21`, bottom), not four - it does not
+enumerate all capsules contributing to a raw multi-channel stream on this device. Conclusion: this
+API is not a usable source of per-channel physical geometry here, multi-channel or not.
+
+**The simplest hypothesis - is any one raw channel better than current mono - tested, and
+provisionally rejected, but this measurement is being redone.** The first pass at this test used
+`PixelCapsDump.runMicComparisonTest()` triggered via `adb shell am start`, with the app
+force-stopped and relaunched between each of the 4 back-to-back captures to guarantee each
+`onCreate`-gated trigger actually fired - which also interrupted the tester's continuous speech
+each time, so the resulting per-config levels may not reflect comparable speech under comparable
+conditions. **Numbers below are provisional and being re-measured** with the tester driving each
+recording individually through the real round-video UI instead of an automated force-stop
+sequence, to remove that confound:
+
+| config | overall RMS | SNR (p90/p10) |
+|---|---|---|
+| `CAMCORDER` mono (current production) | 306.7 | **42.4dB** |
+| `MIC` mono (baseline) | 498.6 | 24.6dB |
+| ch0 (bottom, best of the four) | 179.9 | 15.8dB |
+| ch1 | 139.4 | 14.2dB |
+| ch2 | 146.3 | 15.3dB |
+| ch3 | 109.9 | 14.9dB |
+
+Every raw channel measured dramatically worse than production - roughly **26dB worse SNR** than
+`CAMCORDER`, and ~9-10dB worse than even the raw `MIC` mono baseline - which if confirmed would
+mean `AudioSource.CAMCORDER`/`MIC` are already handing the app a *processed* signal (vendor-side
+noise suppression and/or fusion of these same physical mics) that the raw per-capsule channels
+don't get. Gap this large is very unlikely to be a pure measurement artifact of the interrupted
+recording, but the exact numbers should be treated as preliminary until re-measured cleanly.
+
+**Practical consequence for beamforming, if the gap holds up.** A textbook delay-and-sum beamform
+over 4 incoherent-noise mics buys at most ~10log10(4) = 6dB of SNR improvement in the ideal case.
+That cannot close a 26dB gap on its own. Building our own beamforming or channel-fusion from these
+raw channels would need to *also* reimplement whatever noise suppression the vendor's
+`CAMCORDER`/`MIC` sources already apply, just to reach today's baseline - a much larger undertaking
+than beamforming alone, with no guaranteed win even then. Provisional recommendation, to be
+confirmed: don't pursue channel selection or DIY beamforming for round video/voice messages.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
