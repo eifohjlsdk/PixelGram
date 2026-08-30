@@ -136,6 +136,7 @@ set(NATIVE_LIB "tmessages.49")
 add_library(${NATIVE_LIB} SHARED
         jni.c
         audio.c
+        speech_enhancer.c
         webm_encoder.c
         image.cpp
         intro/IntroRenderer.c

@@ -91,6 +91,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int micFieldDimensionRow;
     private int voiceIsolationRow;
     private int gateThresholdRow;
+    private int speechEnhancementRow;
     private int divider3Row;
 
     private int resetRow;
@@ -156,6 +157,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
         micFieldDimensionRow = rowCount++;
         voiceIsolationRow = rowCount++;
         gateThresholdRow = rowCount++;
+        speechEnhancementRow = rowCount++;
         divider3Row = rowCount++;
 
         resetRow = rowCount++;
@@ -255,6 +257,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 showVoiceIsolationDialog();
             } else if (position == gateThresholdRow) {
                 showGateThresholdDialog();
+            } else if (position == speechEnhancementRow) {
+                showSpeechEnhancementDialog();
             } else if (position == resetRow) {
                 showResetDialog();
             } else if (position == checkNowRow) {
@@ -456,6 +460,20 @@ public class PixelGramSettingsActivity extends BaseFragment {
         };
         boolean[] supported = {true, true, true};
         showModeDialog("Voice Isolation", names, values, supported, voiceIsolationRow, PixelGramSettings::setVoiceIsolationMode);
+    }
+
+    /** RNN-based denoiser, applied before Voice Isolation/gain - see SpeechEnhancer's class doc
+     * and FINDINGS.md for the three-way comparison this setting exists to run. Only DeepFilterNet
+     * was found to have a GPL-incompatibility problem (Apache-2.0 wrapper vs. this app's GPLv2) -
+     * see FINDINGS.md - so it isn't offered here at all, not even disabled. */
+    private void showSpeechEnhancementDialog() {
+        String[] names = {"Off (default)", "RNNoise"};
+        int[] values = {
+                PixelGramSettings.SPEECH_ENHANCEMENT_OFF,
+                PixelGramSettings.SPEECH_ENHANCEMENT_RNNOISE
+        };
+        boolean[] supported = {true, true};
+        showModeDialog("Speech Enhancement", names, values, supported, speechEnhancementRow, PixelGramSettings::setSpeechEnhancementMode);
     }
 
     /** Threshold is a float, not one of showModeDialog's int values, same reason as
@@ -671,6 +689,14 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return String.format(Locale.US, "%.0f dB", db);
     }
 
+    private static String speechEnhancementName(int mode) {
+        switch (mode) {
+            case PixelGramSettings.SPEECH_ENHANCEMENT_RNNOISE: return "RNNoise";
+            default: return "Off";
+        }
+    }
+
+
     private static String downscaleFilterName(int filter) {
         switch (filter) {
             case PixelGramSettings.DOWNSCALE_FILTER_BOX: return "Box";
@@ -725,6 +751,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == micDirectionRow && PixelGramSettings.isMicDirectionSupported())
                     || (pos == micFieldDimensionRow && PixelGramSettings.isMicFieldDimensionSupported())
                     || pos == voiceIsolationRow || pos == gateThresholdRow
+                    || pos == speechEnhancementRow
                     || pos == resetRow || pos == checkNowRow;
         }
 
@@ -819,6 +846,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndValue("Voice Isolation", voiceIsolationName(PixelGramSettings.getVoiceIsolationMode()), true);
                     } else if (position == gateThresholdRow) {
                         cell.setTextAndValue("Gate Threshold", formatGateThreshold(PixelGramSettings.getVoiceIsolationGateThresholdDb()), false);
+                    } else if (position == speechEnhancementRow) {
+                        cell.setTextAndValue("Speech Enhancement", speechEnhancementName(PixelGramSettings.getSpeechEnhancementMode()), false);
                     } else if (position == resetRow) {
                         cell.setCanDisable(true);
                         cell.setTextColor(Theme.getColor(Theme.key_text_RedRegular));

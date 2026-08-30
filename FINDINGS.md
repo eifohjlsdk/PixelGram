@@ -863,6 +863,76 @@ resource - SNR is, because no downstream gain stage can improve a ratio that's a
 the source. The cleaner-but-quieter source is the better starting point precisely because we can
 always add gain back cheaply, but we can't remove noise that's already baked into a noisier source.
 
+## Speech enhancement selector: RNNoise added, DeepFilterNet blocked on licensing (2026-08-30)
+
+Investigated before implementing (see the prior report in conversation, summarized here for the
+record): a two-way Off/RNNoise selector, applied first in the audio chain - before
+VoiceIsolationProcessor's bandpass/gate and before applyMicGain(Float) - for both round video and
+voice messages, deliberately not touching VoIP calls.
+
+**RNNoise: already in this codebase, zero additional cost.** `TMessagesProj/jni/voip/rnnoise` is
+the genuine Xiph RNNoise (BSD-2-clause, confirmed via its `COPYING` file - fully GPLv2-compatible,
+and this repo's own `LICENSE` is GPLv2), already compiled as its own CMake static-library target
+and already whole-archive-linked into `libtmessages.49.so` for VoIP group calls (its only existing
+caller: `tgcalls/group/GroupInstanceCustomImpl.cpp`). Adding a second caller for the recording path
+reuses the exact same compiled code - no new binary size, no new licensing question, and no
+interaction with the VoIP call site (confirmed no shared state - it's a separate call site
+entirely). Implementation: `speech_enhancer.c` (new, added to `jni/CMakeLists.txt`'s source list)
++ `SpeechEnhancer.java`, mirroring `VoiceIsolationProcessor`'s per-recording-session lifecycle.
+
+**FloatS16 scaling - the one non-obvious gotcha, documented prominently in the code.** RNNoise's
+`float *in`/`float *out` are not Android's `[-1.0, 1.0]` `ENCODING_PCM_FLOAT` convention - they're
+what WebRTC's own `common_audio/include/audio_util.h` (vendored in this same tree) calls
+"FloatS16": the same numeric magnitude as 16-bit PCM (`[-32768.0, 32768.0]`), just not quantized to
+it. `rnnoise.h`'s own comments say nothing about range at all. Getting this wrong doesn't crash -
+it just makes RNNoise see our capture as ~32768x quieter than it is, i.e. near-silence, so the
+"denoised" output looks like "the denoiser barely does anything" rather than throwing any error -
+exactly the failure mode that's easy to ship without noticing. The `×32768`/`÷32768` rescale is
+applied once, in `speech_enhancer.c`'s `nativeProcessFrame`, right next to the actual
+`rnnoise_process_frame()` call, with a comment explaining why it's there.
+
+**Frame-size mismatch, resolved by accepting a small, bounded coverage gap rather than
+restructuring buffering.** RNNoise's frame size is fixed at 480 samples (10ms @ 48kHz - confirmed
+from `denoise.c`'s `FRAME_SIZE` constant, not runtime-configurable). Neither round video's per-read
+chunk (512 float samples) nor voice messages' `AudioRecord`-minBufferSize-derived read size is a
+clean multiple of 480. A fully sample-accurate implementation would need a proper carry/queue
+buffer decoupling "samples in" from "samples out," which risks disturbing this app's carefully
+tuned per-chunk timestamp bookkeeping (see this fork's history of timestamp-mismatch bugs).
+Instead, `SpeechEnhancer.process()` denoises every complete 480-sample block in whatever chunk
+it's given and leaves the remainder (bounded, small - 32 of every 512 samples for round video,
+93.75% coverage) untouched rather than dropped or delayed. Documented as a deliberate, revisitable
+simplification, not an oversight - worth a proper redesign only if this turns out audible.
+
+**DeepFilterNet: blocked, not implemented on `main`.** Investigated `io.github.kaleyravideo
+:android-deepfilternet` (the suggested Android wrapper, distributed via Maven Central) before
+touching anything:
+
+- **The wrapper library itself is Apache-2.0, and Apache-2.0 is not GPLv2-compatible.** Confirmed
+  from both the Apache Software Foundation's own GPL-compatibility page and the FSF's license
+  list: Apache-2.0 §9's patent-termination and indemnification clauses are specifically
+  incompatible with GPLv2 (Apache-2.0 *is* compatible with GPLv3, just not v2). This repo's own
+  `LICENSE` is GPLv2. That alone blocks bundling this library into a build of this app that's ever
+  distributed, independent of anything about the model weights.
+- **The model weights' license isn't separately stated even before that.** The fork's docs only
+  say "Apache-2.0" for the code and say nothing about the ~8MB bundled model specifically. Upstream
+  `Rikorose/DeepFilterNet`'s own released models appear to inherit the same dual MIT/Apache-2.0 as
+  its code, but the KaleyraVideo fork did its own "mobile optimization" pass and doesn't restate
+  terms for the resulting artifact - unresolved either way.
+- Separately (not a licensing issue, but worth recording): this library's `processFrame()`
+  operates on 16-bit PCM, not float - contradicting an initial assumption that both libraries
+  operate on float with no conversion needed. Bundling it would reintroduce exactly the
+  quantize-before-DSP problem this session spent real effort removing from both recording paths.
+
+**Not re-investigating this on `main` unless something changes.** The Apache-2.0/GPLv2
+incompatibility is the disqualifying finding, and it's a property of the wrapper library's chosen
+license, not something that gets resolved by finding more information about the model weights - a
+future re-investigation should start from confirming whether that's changed (an explicit
+relicense/dual-license grant from KaleyraVideo, or an independently-built GPLv2-clean packaging of
+upstream's MIT-only option), not by re-deriving the same blocker. See the `deepfilternet-eval`
+branch (never pushed, not merged into `main`) for a private, personal-use-only evaluation build -
+distribution obligations under GPL don't attach to a build that's never distributed, but that
+branch must stay off `main` and unpublished for that to hold.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

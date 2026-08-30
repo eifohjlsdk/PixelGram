@@ -1085,6 +1085,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     // Fresh per recording, same lifecycle as audioRecorder above - see
     // VoiceIsolationProcessor's class doc for why it can't be a shared/static instance.
     private org.telegram.messenger.camera.VoiceIsolationProcessor voiceIsolationProcessor;
+    // Null unless capturing in float AND PixelGramSettings.SPEECH_ENHANCEMENT_RNNOISE is
+    // selected - see SpeechEnhancer's class doc. Applied first in the chain, before
+    // voiceIsolationProcessor. Owns a native handle - must release() when the recording ends.
+    private org.telegram.messenger.camera.SpeechEnhancer speechEnhancer;
     private NoiseSuppressor audioNoiseSuppressor;
     private AutomaticGainControl audioAutomaticGainControl;
     private AcousticEchoCanceler audioEchoCanceler;
@@ -1151,6 +1155,11 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 if (len > 0) {
                     buffer.limit(len);
                     if (audioCaptureIsFloat) {
+                        // Speech enhancement runs first, ahead of Voice Isolation's bandpass/gate
+                        // and the mic gain - see SpeechEnhancer's class doc.
+                        if (speechEnhancer != null) {
+                            speechEnhancer.process(buffer, len);
+                        }
                         if (voiceIsolationProcessor != null) {
                             voiceIsolationProcessor.processFloat(buffer, len);
                         }
@@ -4534,7 +4543,12 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         audioBytesPerSample = audioCaptureIsFloat ? 4 : 2;
         fileBuffer = ByteBuffer.allocateDirect(OPUS_FRAME_SIZE_SAMPLES * audioBytesPerSample);
         fileBuffer.order(ByteOrder.nativeOrder());
-        PixelCameraLog.d("voice message audio capture format: " + (audioCaptureIsFloat ? "PCM_FLOAT" : "PCM_16BIT (fallback)"));
+        // Only constructed when float capture actually took and the setting is on - see
+        // InstantCameraView's identical construction for why there's no isAvailable() check.
+        speechEnhancer = (audioCaptureIsFloat && PixelGramSettings.getSpeechEnhancementMode() != PixelGramSettings.SPEECH_ENHANCEMENT_OFF)
+                ? new org.telegram.messenger.camera.SpeechEnhancer() : null;
+        PixelCameraLog.d("voice message audio capture format: " + (audioCaptureIsFloat ? "PCM_FLOAT" : "PCM_16BIT (fallback)")
+                + " speechEnhancement:" + (speechEnhancer != null ? PixelGramSettings.getSpeechEnhancementMode() : "off(unavailable)"));
         return recorder;
     }
 
@@ -4628,6 +4642,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             if (audioEchoCanceler != null) {
                 audioEchoCanceler.release();
                 audioEchoCanceler = null;
+            }
+            if (speechEnhancer != null) {
+                speechEnhancer.release();
+                speechEnhancer = null;
             }
         } catch (Exception e) {
             FileLog.e(e);

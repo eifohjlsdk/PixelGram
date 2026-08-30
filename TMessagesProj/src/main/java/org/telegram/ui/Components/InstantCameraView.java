@@ -97,6 +97,7 @@ import org.telegram.messenger.camera.CameraSession;
 import org.telegram.messenger.camera.PixelCameraLog;
 import org.telegram.messenger.camera.PixelGramSettings;
 import org.telegram.messenger.camera.Size;
+import org.telegram.messenger.camera.SpeechEnhancer;
 import org.telegram.messenger.camera.VoiceIsolationProcessor;
 import org.telegram.messenger.video.MP4Builder;
 import org.telegram.messenger.video.Mp4Movie;
@@ -2376,6 +2377,10 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         // Fresh per recording, same lifecycle as audioRecorder above - see
         // VoiceIsolationProcessor's class doc for why it can't be a shared/static instance.
         private VoiceIsolationProcessor voiceIsolationProcessor;
+        // Null unless capturing in float AND PixelGramSettings.SPEECH_ENHANCEMENT_RNNOISE is
+        // selected - see SpeechEnhancer's class doc. Applied first in the chain, before
+        // voiceIsolationProcessor. Owns a native handle - must release() when the recording ends.
+        private SpeechEnhancer speechEnhancer;
         // Set in prepareEncoder() based on which encoding the AudioRecord constructor actually
         // accepted - ENCODING_PCM_FLOAT is preferred (see FINDINGS.md's audio input-capability
         // investigation) but isn't universally guaranteed for the record direction the way it is
@@ -2446,6 +2451,11 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         readResult = audioRecorder.read(byteBuffer, 2048);
                         if (readResult > 0) {
                             if (audioCaptureIsFloat) {
+                                // Speech enhancement runs first, ahead of Voice Isolation's
+                                // bandpass/gate and the mic gain - see SpeechEnhancer's class doc.
+                                if (speechEnhancer != null) {
+                                    speechEnhancer.process(byteBuffer, readResult);
+                                }
                                 if (voiceIsolationProcessor != null) {
                                     voiceIsolationProcessor.processFloat(byteBuffer, readResult);
                                 }
@@ -2535,6 +2545,10 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     if (audioEchoCanceler != null) {
                         audioEchoCanceler.release();
                         audioEchoCanceler = null;
+                    }
+                    if (speechEnhancer != null) {
+                        speechEnhancer.release();
+                        speechEnhancer = null;
                     }
                     audioRecorder.release();
                 } catch (Exception e) {
@@ -3662,6 +3676,12 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 audioBytesPerSample = audioCaptureIsFloat ? 4 : 2;
                 PixelCameraLog.d("round-video audio capture format: " + (audioCaptureIsFloat ? "PCM_FLOAT" : "PCM_16BIT (fallback)"));
                 voiceIsolationProcessor = new VoiceIsolationProcessor(audioSampleRate);
+                // Only constructed when float capture actually took (RNNoise needs float
+                // samples - see SpeechEnhancer's class doc) and the setting is on. No
+                // isAvailable() check needed unlike the platform AudioEffects below - RNNoise is
+                // vendored/compiled in, not a device-dependent platform feature.
+                speechEnhancer = (audioCaptureIsFloat && PixelGramSettings.getSpeechEnhancementMode() != PixelGramSettings.SPEECH_ENHANCEMENT_OFF)
+                        ? new SpeechEnhancer() : null;
                 // Each effect is independently gated on its own setting and isAvailable() check.
                 // Actual enabled state is read back via getEnabled() (not assumed from the
                 // setEnabled() call we just made) since AOSP documents that some devices insert
@@ -3829,7 +3849,8 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x"
                             + " micDirection:" + (currentMicDirection != null ? currentMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
                             + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")"
-                            + " voiceIsolation:" + PixelGramSettings.getVoiceIsolationMode() + " gateThreshold:" + PixelGramSettings.getVoiceIsolationGateThresholdDb());
+                            + " voiceIsolation:" + PixelGramSettings.getVoiceIsolationMode() + " gateThreshold:" + PixelGramSettings.getVoiceIsolationGateThresholdDb()
+                            + " speechEnhancement:" + (speechEnhancer != null ? PixelGramSettings.getSpeechEnhancementMode() : "off(unavailable)"));
                 }
 
                 AndroidUtilities.runOnUIThread(() -> {

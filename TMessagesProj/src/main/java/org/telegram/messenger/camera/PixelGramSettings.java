@@ -61,6 +61,15 @@ public class PixelGramSettings {
     public static final int VOICE_ISOLATION_BANDPASS = 1;
     public static final int VOICE_ISOLATION_BANDPASS_GATE = 2;
 
+    /** RNN-based denoiser (RNNoise, vendored - see SpeechEnhancer), applied first in the audio
+     * chain, before VoiceIsolationProcessor's bandpass/gate and before applyMicGain(Float). Off by
+     * default until the three-way comparison (denoiser off / stacked with the existing chain /
+     * denoiser-only with gate+bandpass off and 1x gain) in FINDINGS.md settles whether it should
+     * replace rather than stack with the existing DSP. Only takes effect when capturing in
+     * ENCODING_PCM_FLOAT - see SpeechEnhancer's class doc. */
+    public static final int SPEECH_ENHANCEMENT_OFF = 0;
+    public static final int SPEECH_ENHANCEMENT_RNNOISE = 1;
+
     /** Gate threshold choices, in dBFS against the pre-gain raw signal (this runs before mic
      * gain - see VoiceIsolationProcessor) - not the post-chain levels in FINDINGS.md's audio
      * matrix, which were measured after gain. */
@@ -104,6 +113,7 @@ public class PixelGramSettings {
     private static final String KEY_MIC_DIRECTION_MODE = "mic_direction_mode";
     private static final String KEY_MIC_FIELD_DIMENSION = "mic_field_dimension";
     private static final String KEY_VOICE_ISOLATION_MODE = "voice_isolation_mode";
+    private static final String KEY_SPEECH_ENHANCEMENT_MODE = "speech_enhancement_mode";
     private static final String KEY_GATE_THRESHOLD_DB = "voice_isolation_gate_threshold_db";
     private static final String KEY_DOWNSCALE_FILTER = "downscale_filter_mode";
     private static final String KEY_DITHER_AMOUNT_LSB = "dither_amount_lsb";
@@ -160,6 +170,7 @@ public class PixelGramSettings {
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
     public static final int DEFAULT_VOICE_ISOLATION_MODE = VOICE_ISOLATION_BANDPASS_GATE;
     public static final float DEFAULT_GATE_THRESHOLD_DB = -45f;
+    public static final int DEFAULT_SPEECH_ENHANCEMENT_MODE = SPEECH_ENHANCEMENT_OFF;
     public static final int DEFAULT_DOWNSCALE_FILTER = DOWNSCALE_FILTER_LANCZOS;
     // In multiples of 1/255 (one 8-bit LSB), applied as +-0.5x this value. 0 = off. Matches what
     // shipped without a setting (1x = +-0.5 LSB) as the default so existing recordings don't
@@ -444,6 +455,14 @@ public class PixelGramSettings {
         prefs().edit().putInt(KEY_VOICE_ISOLATION_MODE, mode).apply();
     }
 
+    public static int getSpeechEnhancementMode() {
+        return prefs().getInt(KEY_SPEECH_ENHANCEMENT_MODE, DEFAULT_SPEECH_ENHANCEMENT_MODE);
+    }
+
+    public static void setSpeechEnhancementMode(int mode) {
+        prefs().edit().putInt(KEY_SPEECH_ENHANCEMENT_MODE, mode).apply();
+    }
+
     public static float getVoiceIsolationGateThresholdDb() {
         return prefs().getFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB);
     }
@@ -554,6 +573,7 @@ public class PixelGramSettings {
                 .putFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION)
                 .putInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE)
                 .putFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB)
+                .putInt(KEY_SPEECH_ENHANCEMENT_MODE, DEFAULT_SPEECH_ENHANCEMENT_MODE)
                 .putInt(KEY_DOWNSCALE_FILTER, DEFAULT_DOWNSCALE_FILTER)
                 .putFloat(KEY_DITHER_AMOUNT_LSB, DEFAULT_DITHER_AMOUNT_LSB)
                 .apply();
