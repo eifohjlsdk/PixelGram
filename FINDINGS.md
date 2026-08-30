@@ -557,6 +557,82 @@ currently offers with margin, except 960x960 which lands exactly at that limit (
 = 3600 exactly) - technically in spec but with zero headroom, worth keeping in mind if 960 survives
 the ongoing resolution-ceiling bracketing above.
 
+## Exposure cap investigation and implementation (Path A) (2026-08-30)
+
+Investigated capping exposure time in dim light (where AE rides SENSOR_EXPOSURE_TIME toward the
+33.3ms frame budget at 30fps, producing motion blur) now that MANUAL_SENSOR is confirmed available
+(see above). Findings, before implementing:
+
+- **`CONTROL_AE_TARGET_FPS_RANGE` only bounds the ceiling, and we're already at it.** Frame
+  duration can't exceed `1/fps_min`, so AE's own exposure-time choice is already capped at ~33.3ms
+  by the current fixed `[30,30]` range - that's the behavior being complained about, not something
+  the fps range already prevents. `SENSOR_EXPOSURE_TIME` is documented as ignored entirely under
+  `CONTROL_AE_MODE_ON*` - a real, always-effective cap below the current ceiling requires either
+  full manual control (`CONTROL_AE_MODE_OFF`) or lowering the ceiling itself.
+- **AWB/AF are unaffected by AE going manual** - independent state machines in the Camera2 model;
+  `AE_MODE_OFF` + `AWB_MODE_AUTO` + `AF_MODE_CONTINUOUS_VIDEO` is an explicitly valid combination.
+- **No platform-provided brightness signal exists under full manual AE** - only relevant if going
+  fully manual (Path B, not built): would need our own mean-luma feedback loop off actual captured
+  pixels (e.g. reusing `InstantCameraVideoEncoderOverlayHelper`'s existing 48x48 downsample).
+- **Middle path found and used**: request a fixed `[60,60]` `CONTROL_AE_TARGET_FPS_RANGE` instead
+  of `[30,30]` (confirmed available on the front camera:
+  `[[15,15],[15,24],[24,24],[15,30],[24,30],[30,30],[15,60],[60,60]]`) - this halves the
+  frame-duration ceiling to ~16.7ms while AE, AWB, and AF all stay fully automatic, no custom
+  brightness tracking needed. Deliberately used the fixed `[60,60]` rather than the also-available
+  variable `[15,60]`, to avoid reintroducing the free-running variable-frame-rate bug this fork
+  started by fixing.
+- Front camera ranges: `SENSOR_INFO_EXPOSURE_TIME_RANGE` 68,360ns-1,000,000,628ns,
+  `SENSOR_INFO_SENSITIVITY_RANGE` 55-19,692. Proposed cap: 16.7ms (1/60s) - exactly what the
+  `[60,60]` middle path gives for free, well clear of the sensor's 68us floor.
+
+**Implementation**: new `Exposure Cap` setting (off by default - only matters in dim light and
+costs extra sensor/ISP power otherwise). When on, `Camera2Session` requests `[60,60]` instead of
+`[30,30]`; `VideoRecorder.frameAvailable()` explicitly decimates 2:1 using the real per-frame
+hardware timestamp for every kept frame (real 60fps frames arrive ~16.7ms apart, so keeping every
+other one naturally produces a uniformly ~33.3ms-spaced sequence, matching what a genuine 30fps
+capture produces - deliberately not relying on the encoder to convert a 60fps input while
+configured for 30, which is exactly the timestamp mismatch this fork started by fixing). Logs the
+actual `SENSOR_EXPOSURE_TIME`/`SENSOR_SENSITIVITY` from `CaptureResult` once per second so AE's
+real behavior in each mode is directly observable rather than assumed. Included in the recording
+marker line.
+
+### Measured (2026-08-30)
+
+**AE genuinely never approaches the ceiling in normal room lighting** - a 15s recording with the
+cap off held `SENSOR_EXPOSURE_TIME` at 7-11ms throughout (well under even the *capped* 16.7ms
+ceiling), `SENSOR_SENSITIVITY` 55-208. Confirms the concern this feature addresses doesn't exist in
+normal lighting - the cap would be a genuine no-op there, exactly as expected, and correctly not
+something to worry about outside dim conditions.
+
+**In dim lighting, AE pins at the ceiling for the whole recording**: cap off, same dim room,
+`SENSOR_EXPOSURE_TIME` climbed to 32.3-32.9ms (right at the 33.3ms ceiling) and stayed pinned there
+for all 15s, `SENSOR_SENSITIVITY` fixed at 1231 - the exact motion-blur-risk scenario the cap is
+meant to address, confirmed present and real.
+
+**With the cap on, same dim room**: `targetFpsRange=[60,60]` applied as requested,
+`SENSOR_EXPOSURE_TIME` held at 16.2-16.4ms for the whole recording (right at the ~16.7ms ceiling,
+almost exactly half the uncapped value), `SENSOR_SENSITIVITY` unchanged at 1231. The cap works
+exactly as designed.
+
+**Output fps verified genuinely uniform 30.0fps with the cap on**: per-frame PTS interval
+distributions for capped vs. uncapped 15s dim-room recordings are essentially identical - both
+dominated by ~33.333ms intervals (226/261 and 280/306 frames respectively at exactly 0.033333s,
+the rest within a few microseconds of it, a couple of one-off ~50ms hiccups in each), and
+`nb_frames/duration` computes to ~29.9fps for both. The 2:1 decimation produces output
+indistinguishable in timing quality from native 30fps capture. One cosmetic oddity: ffprobe's
+`r_frame_rate` heuristic reports `60/1` for the capped file despite `avg_frame_rate` and the actual
+per-frame deltas both agreeing on ~29.9-30.0fps - not chased further given the per-frame interval
+evidence is conclusive, but flagged here rather than silently ignored in case it affects some
+player's format detection.
+
+**No measurable thermal or battery difference over a 15s recording**: battery temperature 31.1°C →
+30.9°C (cap off) vs. 31.4°C → 31.4°C (cap on) - within normal noise, and 15s is almost certainly too
+short a window for a real thermal delta to show up regardless of sensor fps. Device was AC-powered
+throughout (charging), which caps how informative a short-clip power comparison can be; a
+longer-duration test on battery power would be needed for a real answer to the power-cost
+question. Not conclusive either way - absence of a measurable difference at 15s isn't evidence of
+absence at longer durations.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
