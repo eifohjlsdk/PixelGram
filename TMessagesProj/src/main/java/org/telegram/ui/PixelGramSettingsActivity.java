@@ -387,16 +387,18 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showVoiceEnhancementDialog() {
-        String[] names = {"Off (raw mic)", "Voice communication", "Voice recognition", "Camcorder (default)"};
+        String[] names = {"Off (raw mic)", "Voice communication", "Voice recognition", "Camcorder (default)", "Unprocessed"};
         int[] values = {
                 PixelGramSettings.VOICE_ENHANCEMENT_OFF,
                 PixelGramSettings.VOICE_ENHANCEMENT_VOICE_COMMUNICATION,
                 PixelGramSettings.VOICE_ENHANCEMENT_VOICE_RECOGNITION,
-                PixelGramSettings.VOICE_ENHANCEMENT_CAMCORDER
+                PixelGramSettings.VOICE_ENHANCEMENT_CAMCORDER,
+                PixelGramSettings.VOICE_ENHANCEMENT_UNPROCESSED
         };
-        // AudioSource support isn't queryable ahead of time the way CameraCharacteristics
-        // modes are - all 4 are always shown enabled.
-        boolean[] supported = {true, true, true, true};
+        // AudioSource support generally isn't queryable ahead of time the way
+        // CameraCharacteristics modes are, except UNPROCESSED, which has its own dedicated
+        // AudioManager property - see PixelGramSettings.isUnprocessedAudioSourceSupported().
+        boolean[] supported = {true, true, true, true, PixelGramSettings.isUnprocessedAudioSourceSupported()};
         showModeDialog("Voice Enhancement", names, values, supported, voiceEnhancementRow, PixelGramSettings::setVoiceEnhancementMode);
     }
 
@@ -687,6 +689,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
             case PixelGramSettings.VOICE_ENHANCEMENT_VOICE_COMMUNICATION: return "Voice communication";
             case PixelGramSettings.VOICE_ENHANCEMENT_VOICE_RECOGNITION: return "Voice recognition";
             case PixelGramSettings.VOICE_ENHANCEMENT_CAMCORDER: return "Camcorder";
+            case PixelGramSettings.VOICE_ENHANCEMENT_UNPROCESSED: return "Unprocessed";
             default: return "Off";
         }
     }

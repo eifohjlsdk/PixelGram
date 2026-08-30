@@ -37,6 +37,14 @@ public class PixelGramSettings {
     public static final int VOICE_ENHANCEMENT_VOICE_COMMUNICATION = 1;
     public static final int VOICE_ENHANCEMENT_VOICE_RECOGNITION = 2;
     public static final int VOICE_ENHANCEMENT_CAMCORDER = 3;
+    // AudioSource.UNPROCESSED: the only source the platform documents as genuinely
+    // unprocessed - no AGC, no noise suppression, no echo cancellation applied ahead of the
+    // app, guaranteed rather than merely likely (unlike e.g. VOICE_RECOGNITION, which is
+    // commonly implemented with flat gain but isn't specified to be). Only actually available
+    // if AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED is declared - see
+    // isUnprocessedAudioSourceSupported(). Best source for feeding our own DSP/ML denoising a
+    // clean signal, since nothing upstream has already altered it.
+    public static final int VOICE_ENHANCEMENT_UNPROCESSED = 4;
 
     public static final int MIC_GAIN_1X = 0;
     public static final int MIC_GAIN_1_5X = 1;
@@ -244,9 +252,25 @@ public class PixelGramSettings {
                 return MediaRecorder.AudioSource.VOICE_RECOGNITION;
             case VOICE_ENHANCEMENT_CAMCORDER:
                 return MediaRecorder.AudioSource.CAMCORDER;
+            case VOICE_ENHANCEMENT_UNPROCESSED:
+                return MediaRecorder.AudioSource.UNPROCESSED;
             case VOICE_ENHANCEMENT_OFF:
             default:
                 return MediaRecorder.AudioSource.DEFAULT;
+        }
+    }
+
+    /** Whether AudioSource.UNPROCESSED is genuinely available on this device - per platform
+     * docs, PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED is the defined way to check ahead of
+     * construction, distinct from just trying to construct an AudioRecord with it and seeing
+     * if it throws/returns uninitialized (both confirmed to agree on this device - see
+     * FINDINGS.md's audio input-capability investigation). */
+    public static boolean isUnprocessedAudioSourceSupported() {
+        try {
+            android.media.AudioManager am = (android.media.AudioManager) ApplicationLoader.applicationContext.getSystemService(Context.AUDIO_SERVICE);
+            return am != null && "true".equals(am.getProperty(android.media.AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED));
+        } catch (Exception e) {
+            return false;
         }
     }
 
