@@ -143,7 +143,15 @@ public class PixelGramSettings {
     // at each step - at 5x with the soft limiter in place, measured -25.8dB mean, -7.7dB peak,
     // no samples near full scale, so the limiter is only catching occasional transients rather
     // than compressing continuously (see "Mic gain 4x/5x + soft limiter" below).
-    public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_CAMCORDER;
+    // VOICE_ENHANCEMENT_OFF (AudioSource.DEFAULT, labeled "Off (raw mic)" in the menu) - changed
+    // from CAMCORDER after a proper SNR comparison (real voice, arm's-length geometry) measured
+    // DEFAULT ~5.6dB cleaner than CAMCORDER, despite the original matrix above finding CAMCORDER
+    // ~4.7dB louder. Both are true: CAMCORDER's extra level is a far-talk gain boost that raises
+    // noise right along with signal, not a cleanup - see FINDINGS.md's "Round video's default
+    // AudioSource switched to MIC/DEFAULT" for the full reconciliation. Round video's own gain
+    // stage (mic gain 1x-5x, soft limiter) makes level the cheap, recoverable part and SNR the
+    // scarce one, so the cleaner-but-quieter source is the better starting point.
+    public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_OFF;
     public static final boolean DEFAULT_NOISE_SUPPRESSION = true;
     public static final boolean DEFAULT_AGC = false;
     public static final boolean DEFAULT_ECHO_CANCELLATION = true;

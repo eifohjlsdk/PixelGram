@@ -740,11 +740,12 @@ software copy (which would show identical RMS and correlation ≈1.0 on every pa
 the earlier "only one microphone is accessible" conclusion from prior mic-direction/field-dimension
 work - see the follow-up immediately below for what (if anything) that's actually good for.
 
-## Four-mic array: distinct channels confirmed, but none beats current mono routing - UNDER REVISION (2026-08-30)
+## Four-mic array: distinct channels confirmed, but none beats plain MIC mono (2026-08-30)
 
 Follow-up to the channel-duplication test above. Investigated what's actually reachable now that 4
 distinct capsules are confirmed, before touching anything - then tested the simplest hypothesis
-directly.
+directly. Measured twice: a first pass whose methodology turned out to be unreliable in two
+different ways (both documented below since they're worth not repeating), then a clean re-measure.
 
 **Physical correspondence and channel order: not documented, and only weakly inferable.**
 `AudioDeviceInfo.getChannelIndexMasks()`'s raw index-channel ordering has no public,
@@ -766,39 +767,101 @@ populated even outside the new multi-channel path. Worse, during the actual 4-ch
 enumerate all capsules contributing to a raw multi-channel stream on this device. Conclusion: this
 API is not a usable source of per-channel physical geometry here, multi-channel or not.
 
-**The simplest hypothesis - is any one raw channel better than current mono - tested, and
-provisionally rejected, but this measurement is being redone.** The first pass at this test used
-`PixelCapsDump.runMicComparisonTest()` triggered via `adb shell am start`, with the app
-force-stopped and relaunched between each of the 4 back-to-back captures to guarantee each
-`onCreate`-gated trigger actually fired - which also interrupted the tester's continuous speech
-each time, so the resulting per-config levels may not reflect comparable speech under comparable
-conditions. **Numbers below are provisional and being re-measured** with the tester driving each
-recording individually through the real round-video UI instead of an automated force-stop
-sequence, to remove that confound:
+**Three measurement artifacts found and eliminated before trusting any number here** - all worth
+recording since they'll bite again if this diagnostic tooling (or this kind of test) is reused
+carelessly:
 
-| config | overall RMS | SNR (p90/p10) |
-|---|---|---|
-| `CAMCORDER` mono (current production) | 306.7 | **42.4dB** |
-| `MIC` mono (baseline) | 498.6 | 24.6dB |
-| ch0 (bottom, best of the four) | 179.9 | 15.8dB |
-| ch1 | 139.4 | 14.2dB |
-| ch2 | 146.3 | 15.3dB |
-| ch3 | 109.9 | 14.9dB |
+1. The first pass drove all 4 configs through `PixelCapsDump.runMicComparisonTest()` via chained
+   `adb shell am start` calls, force-stopping the app between each to guarantee the `onCreate`-gated
+   trigger actually fired. That also interrupted the tester's continuous speech each time, so the
+   per-config levels weren't comparable speech under comparable conditions - discarded entirely.
+2. On the re-measure, the raw 4-channel capture briefly showed channels 1-3 going to exact digital
+   zero for a solid 2.1s block partway through a 5s recording (98.9% zero-mask agreement between
+   the three, channel 0 unaffected but showing a coincident 90ms glitch at the same instant) - at
+   first read as a platform/HAL limitation on sustained multi-channel capture. It wasn't: the
+   tester had a round-video recording already in progress in the real UI (its own independent
+   `AudioRecord` session on the same mic hardware) when the diagnostic capture's trigger fired,
+   because the "go" cue from the mono configs (where it meant "start recording a circle") carried
+   over. Two concurrent `AudioRecord` sessions contending for the same hardware, not a hardware
+   ceiling - confirmed by re-running the identical capture in isolation (nothing else touching the
+   mic), which showed no dropout at all (~1% exact-zero samples, all in the first ~20ms startup
+   blip, identical and normal on every channel). Re-running this diagnostic tool again: make sure
+   nothing else is actively recording at the same time.
+3. The mono configs and the 4-channel test were all recorded against a podcast playing from a
+   second phone positioned ~25cm directly *underneath* a vertically-held Pixel, not the tester's
+   own voice at arm's length. That matters: the "bottom" mic (`id=21`, `orientation=(0,0,1)`) points
+   almost straight at a source in that position, and `AudioSource.CAMCORDER` on many devices
+   applies directional/spatial tuning that assumes a source *in front of* the phone (what a
+   camcorder normally films), not underneath it - a real risk that this geometry specifically
+   disadvantaged `CAMCORDER` and advantaged whichever raw channel happened to be best-aimed at the
+   speaker underneath. Re-measured the mono configs (only - see below for why the raw-channel
+   comparison wasn't repeated) with the tester's own voice, phone held at actual arm's length as
+   for a real round-video recording. Results held up closely: `CAMCORDER` was identical (14.6dB
+   both times), `MIC`/`DEFAULT` and `UNPROCESSED` both landed within ~2dB of the original numbers.
+   The geometry confound turned out not to change the outcome, but was still the right thing to
+   check rather than assume.
 
-Every raw channel measured dramatically worse than production - roughly **26dB worse SNR** than
-`CAMCORDER`, and ~9-10dB worse than even the raw `MIC` mono baseline - which if confirmed would
-mean `AudioSource.CAMCORDER`/`MIC` are already handing the app a *processed* signal (vendor-side
-noise suppression and/or fusion of these same physical mics) that the raw per-capsule channels
-don't get. Gap this large is very unlikely to be a pure measurement artifact of the interrupted
-recording, but the exact numbers should be treated as preliminary until re-measured cleanly.
+**Raw-channel comparison not repeated under corrected geometry.** Its case was already weak before
+the geometry issue came up - even the best channel only marginally beat the *current* `CAMCORDER`
+default and clearly lost to `MIC`/`DEFAULT` - and fixing geometry doesn't touch the three
+independent problems that make the raw array impractical regardless: channel order is undocumented
+(see above), `MicrophoneInfo` geometry reporting is unreliable (see above), and the diagnostic
+capture mode has now been shown fragile under concurrent mic contention (artifact 2 above). Not
+worth the retest.
 
-**Practical consequence for beamforming, if the gap holds up.** A textbook delay-and-sum beamform
-over 4 incoherent-noise mics buys at most ~10log10(4) = 6dB of SNR improvement in the ideal case.
-That cannot close a 26dB gap on its own. Building our own beamforming or channel-fusion from these
-raw channels would need to *also* reimplement whatever noise suppression the vendor's
-`CAMCORDER`/`MIC` sources already apply, just to reach today's baseline - a much larger undertaking
-than beamforming alone, with no guaranteed win even then. Provisional recommendation, to be
-confirmed: don't pursue channel selection or DIY beamforming for round video/voice messages.
+**Final mono comparison, proper geometry, tester's own voice at arm's length, matched settings
+(mic gain 1x, voice isolation/echo cancellation/noise suppression all off), SNR via 50ms-windowed
+RMS (10th percentile = noise floor, 90th = speech level, bandpassed 100-6000Hz first):**
+
+| config | SNR (p90/p10) |
+|---|---|
+| `CAMCORDER` mono (previous production default) | 14.6dB |
+| `MIC`/`DEFAULT` mono | **20.2dB** |
+| `UNPROCESSED` mono | 18.9dB |
+
+`MIC`/`DEFAULT` beats `CAMCORDER` by ~5.6dB SNR, `UNPROCESSED` by ~4.3dB - see "Round video's
+default AudioSource switched to MIC/DEFAULT" below for the reconciliation against the earlier audio
+matrix measurement (which found `CAMCORDER` *louder*, not cleaner) and the resulting change.
+
+For completeness, the earlier (podcast-underneath, not repeated) raw-channel numbers: no raw
+channel beat `MIC`/`DEFAULT` there either - ch0 (best of the four) was 6dB worse, the other three
+3.5-5dB worse still. ch0 modestly beat the *previous* `CAMCORDER` default (16.0 vs 14.6dB), but
+that's still a weak case for adopting raw multi-channel capture given the undocumented
+channel order/geometry above and the contention-fragility just demonstrated.
+
+**The bigger, much simpler finding: plain `MIC`/`DEFAULT` beats `CAMCORDER` with no multi-channel
+work needed at all** - see "Round video's default AudioSource switched to MIC/DEFAULT" below,
+which acts on exactly this.
+
+**Practical consequence for beamforming.** A textbook delay-and-sum beamform over 4
+incoherent-noise mics buys at most ~10log10(4) = 6dB of SNR improvement in the ideal case - not
+enough to turn any raw channel into a `MIC`-beating signal on its own, on top of needing solved
+channel-order/geometry problems that don't currently have answers on this device.
+**Recommendation: don't pursue channel selection or DIY beamforming for round video/voice
+messages.** The 4-channel access this session confirmed is real, but not usable to improve on
+`AudioSource.MIC`/`DEFAULT` for this use case.
+
+## Round video's default AudioSource switched to MIC/DEFAULT (2026-08-30)
+
+The mono comparison above (proper arm's-length geometry, tester's own voice) measured
+`AudioSource.DEFAULT` (the "MIC" config, exposed in the menu as Voice Enhancement "Off (raw mic)")
+at ~5.6dB better SNR than `CAMCORDER`, and ~4.3dB better than `UNPROCESSED`. Switched
+`PixelGramSettings.DEFAULT_VOICE_ENHANCEMENT` from `VOICE_ENHANCEMENT_CAMCORDER` to
+`VOICE_ENHANCEMENT_OFF` (i.e. `AudioSource.DEFAULT`) on this basis.
+
+**Reconciling against the original audio matrix measurement, which found the opposite-looking
+result.** That earlier measurement (see "Audio matrix measurement" above) found `CAMCORDER` about
+**+4.7dB louder** than the default source at the same gain - which is why `CAMCORDER` was chosen as
+the shipped default in the first place. Both measurements are true simultaneously: `CAMCORDER`
+applies a far-talk gain boost intended for camcorder-style use (subject at a distance, not held to
+the mouth), and that boost raises the noise floor right along with the speech level - it's a gain
+stage, not a cleanup stage, so it doesn't change *SNR*, only *level*. The matrix measurement was
+about which source is louder; this measurement is about which source is cleaner, and they're
+answering different questions. Since round video already has its own controllable gain stage (the
+mic gain multiplier, 1x-5x) with a soft limiter to catch the top end, level is not the scarce
+resource - SNR is, because no downstream gain stage can improve a ratio that's already fixed by
+the source. The cleaner-but-quieter source is the better starting point precisely because we can
+always add gain back cheaply, but we can't remove noise that's already baked into a noisier source.
 
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4

@@ -387,7 +387,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showVoiceEnhancementDialog() {
-        String[] names = {"Off (raw mic)", "Voice communication", "Voice recognition", "Camcorder (default)", "Unprocessed"};
+        String[] names = {"Off (raw mic, default)", "Voice communication", "Voice recognition", "Camcorder", "Unprocessed"};
         int[] values = {
                 PixelGramSettings.VOICE_ENHANCEMENT_OFF,
                 PixelGramSettings.VOICE_ENHANCEMENT_VOICE_COMMUNICATION,
