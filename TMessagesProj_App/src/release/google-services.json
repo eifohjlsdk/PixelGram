@@ -7,6 +7,25 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:820002939591:android:89df039b85abb2312814e2",
+        "android_client_info": {
+          "package_name": "com.pixelgram.messenger.web"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAKXqHnkvQ8mR0Tk0ZmHQX6KoKwgiy5xxo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:820002939591:android:9063cf40a1b5df7a2814e2",
         "android_client_info": {
           "package_name": "org.telegram.messenger.web"
