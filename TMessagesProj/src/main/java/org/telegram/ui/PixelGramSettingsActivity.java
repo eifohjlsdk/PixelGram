@@ -366,8 +366,12 @@ public class PixelGramSettingsActivity extends BaseFragment {
     }
 
     private void showVideoBitrateDialog() {
-        CharSequence[] options = {"800 kbps", "1.0 Mbps (default)", "1.2 Mbps", "1.5 Mbps", "2 Mbps", "3 Mbps", "4 Mbps", "6 Mbps"};
-        int[] values = {800_000, 1_000_000, 1_200_000, 1_500_000, 2_000_000, 3_000_000, 4_000_000, 6_000_000};
+        // Bitrates above ~1.2-1.3Mbps risk the round-video file-size ceiling over a full 60s
+        // recording (see PixelGramSettings.ROUND_VIDEO_SAFE_MAX_BYTES) - PixelGramSettings
+        // automatically caps whatever's picked here at recording time, so nothing above is
+        // actually unsafe to select, just possibly reduced in practice for a long recording.
+        CharSequence[] options = {"800 kbps", "1.0 Mbps (default)", "1.1 Mbps", "1.2 Mbps", "1.25 Mbps", "1.4 Mbps", "1.5 Mbps", "1.6 Mbps", "1.75 Mbps", "2 Mbps", "3 Mbps", "4 Mbps", "6 Mbps"};
+        int[] values = {800_000, 1_000_000, 1_100_000, 1_200_000, 1_250_000, 1_400_000, 1_500_000, 1_600_000, 1_750_000, 2_000_000, 3_000_000, 4_000_000, 6_000_000};
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Video Bitrate");
         builder.setItems(options, (dialog, which) -> {

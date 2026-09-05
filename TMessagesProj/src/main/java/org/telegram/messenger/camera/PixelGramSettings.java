@@ -160,6 +160,22 @@ public class PixelGramSettings {
     public static final int DEFAULT_VIDEO_BITRATE = 1_000_000;
     public static final int DEFAULT_AUDIO_BITRATE = 96_000;
 
+    /** Telegram limits round video by file size, not resolution or duration on their own - above
+     * some server-side ceiling, an upload otherwise valid as a round message is silently
+     * reclassified as a normal (non-round) video instead of being rejected. There's no client-
+     * side constant for this in the whole tree (grepped for it - see FINDINGS.md's "File size
+     * cap" section); bisected by hand instead: a 60s/640px recording at 1Mbps video (11.12MB
+     * total) was accepted as round, the same at 2Mbps (15.61MB) was reclassified. That test was
+     * shot in near-darkness, which compresses well below its nominal bitrate - a bright, detailed
+     * scene at the same settings lands much closer to nominal, so this budget is set well under
+     * the confirmed-accepted size rather than at it, and worst-case (assumes the encoder actually
+     * spends its full allotted bitrate) rather than best-case. Used by
+     * capVideoBitrateForSizeBudget() below, both for the pre-recording bitrate cap and
+     * InstantCameraView's live mid-recording ratchet-down fallback. */
+    public static final int ROUND_VIDEO_MAX_DURATION_MS = 60_000;
+    public static final long ROUND_VIDEO_SAFE_MAX_BYTES = 9_500_000L;
+    private static final double ROUND_VIDEO_MUX_OVERHEAD_FRACTION = 0.03;
+
     /** Opus encoder application mode for voice-message recording (audio.c/initRecorder) - values
      * match libopus's own OPUS_APPLICATION_VOIP/OPUS_APPLICATION_AUDIO constants directly (2048/
      * 2049), passed straight through the JNI boundary with no translation layer. AUDIO is the
@@ -294,6 +310,25 @@ public class PixelGramSettings {
 
     public static void setVideoBitrate(int bitrate) {
         prefs().edit().putInt(KEY_VIDEO_BITRATE, bitrate).apply();
+    }
+
+    /** Clamps videoBitrateBps down (never up) so that a full ROUND_VIDEO_MAX_DURATION_MS
+     * recording at this video bitrate, plus audioBitrateBps - both tracks budgeted together out
+     * of the same ceiling, not audio "on top" of it - projects to no more than
+     * ROUND_VIDEO_SAFE_MAX_BYTES net of estimated mux container overhead. Returns
+     * videoBitrateBps unchanged if it already fits. See ROUND_VIDEO_SAFE_MAX_BYTES's own comment
+     * for where the ceiling number comes from. */
+    public static int capVideoBitrateForSizeBudget(int videoBitrateBps, int audioBitrateBps, int durationMs) {
+        double payloadBudgetBytes = ROUND_VIDEO_SAFE_MAX_BYTES * (1.0 - ROUND_VIDEO_MUX_OVERHEAD_FRACTION);
+        double durationSec = durationMs / 1000.0;
+        double totalBudgetBps = (payloadBudgetBytes * 8.0) / durationSec;
+        double maxVideoBps = totalBudgetBps - audioBitrateBps;
+        if (maxVideoBps < 100_000) {
+            // Audio alone already eats nearly the whole budget at this duration - clamp to a
+            // floor rather than return something unusably low or negative.
+            maxVideoBps = 100_000;
+        }
+        return videoBitrateBps > maxVideoBps ? (int) maxVideoBps : videoBitrateBps;
     }
 
     public static int getAudioBitrate() {

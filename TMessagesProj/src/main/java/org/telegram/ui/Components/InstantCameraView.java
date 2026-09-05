@@ -2299,6 +2299,13 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         private boolean videoConvertFirstWrite = true;
         private boolean blendEnabled;
 
+        // File-size budget safeguard (see PixelGramSettings.capVideoBitrateForSizeBudget and
+        // FINDINGS.md's "File size cap" section) - the pre-recording bitrate cap handles the
+        // common case, but a busier-than-expected scene can still outrun it; these track the
+        // live ratchet-down fallback in drainEncoder().
+        private long sizeBudgetStartPresentationUs = -1;
+        private boolean sizeBudgetBitrateRatcheted;
+
         private Surface surface;
         private android.opengl.EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
         private android.opengl.EGLContext eglContext = EGL14.EGL_NO_CONTEXT;
@@ -2571,6 +2578,15 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             started = true;
             int resolution = PixelGramSettings.getResolution();
             int bitrate = PixelGramSettings.getVideoBitrate();
+            int audioBitrateForBudget = PixelGramSettings.getAudioBitrate();
+            int cappedBitrate = PixelGramSettings.capVideoBitrateForSizeBudget(bitrate, audioBitrateForBudget, PixelGramSettings.ROUND_VIDEO_MAX_DURATION_MS);
+            if (cappedBitrate != bitrate) {
+                PixelCameraLog.w("round video: requested video bitrate " + bitrate + " (+audio " + audioBitrateForBudget
+                        + ") over " + PixelGramSettings.ROUND_VIDEO_MAX_DURATION_MS + "ms risks the round-video file-size ceiling - capped to " + cappedBitrate);
+                bitrate = cappedBitrate;
+            }
+            sizeBudgetStartPresentationUs = -1;
+            sizeBudgetBitrateRatcheted = false;
             AndroidUtilities.runOnUIThread(() -> {
                 NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.stopAllHeavyOperations, 512);
             });
@@ -3983,6 +3999,49 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             return surface;
         }
 
+        // Live fallback for PixelGramSettings.capVideoBitrateForSizeBudget(): that pre-recording
+        // cap assumes the encoder actually spends close to its full allotted bitrate, but a
+        // scene busier than the one this was budgeted against can still outrun it. availableSize
+        // (MP4Builder.writeSampleData's return value) is the real cumulative file size on disk,
+        // flushed roughly every 32KB - a cheap, already-computed running byte counter, so this
+        // just projects it forward against elapsed presentation time rather than adding a
+        // separate counter. Video-track calls only: video dominates the budget and audio's own
+        // bitrate is already netted out of the ceiling up front.
+        private void maybeRatchetBitrateForSizeBudget(long fileSizeBytes, long presentationTimeUs) {
+            if (sizeBudgetBitrateRatcheted || fileSizeBytes <= 0 || videoEncoder == null) {
+                return;
+            }
+            if (sizeBudgetStartPresentationUs < 0) {
+                sizeBudgetStartPresentationUs = presentationTimeUs;
+                return;
+            }
+            long elapsedUs = presentationTimeUs - sizeBudgetStartPresentationUs;
+            if (elapsedUs < 2_000_000) {
+                return; // let the first couple seconds settle before projecting anything
+            }
+            double elapsedSec = elapsedUs / 1_000_000.0;
+            double projectedBytes = fileSizeBytes / elapsedSec * (PixelGramSettings.ROUND_VIDEO_MAX_DURATION_MS / 1000.0);
+            if (projectedBytes <= PixelGramSettings.ROUND_VIDEO_SAFE_MAX_BYTES) {
+                return;
+            }
+            double remainingSec = Math.max(1.0, (PixelGramSettings.ROUND_VIDEO_MAX_DURATION_MS / 1000.0) - elapsedSec);
+            double remainingBudgetBytes = PixelGramSettings.ROUND_VIDEO_SAFE_MAX_BYTES - fileSizeBytes;
+            long newVideoBitrate = Math.max(200_000, (long) ((remainingBudgetBytes * 8.0) / remainingSec) - PixelGramSettings.getAudioBitrate());
+            if (newVideoBitrate >= videoBitrate) {
+                return; // this is a ratchet down only, never up
+            }
+            try {
+                android.os.Bundle params = new android.os.Bundle();
+                params.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, (int) newVideoBitrate);
+                videoEncoder.setParameters(params);
+                sizeBudgetBitrateRatcheted = true;
+                PixelCameraLog.w("round video: projected size " + (long) projectedBytes + "B at " + elapsedSec
+                        + "s exceeds the safe budget (" + PixelGramSettings.ROUND_VIDEO_SAFE_MAX_BYTES + "B) - ratcheted live bitrate from " + videoBitrate + " to " + newVideoBitrate);
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        }
+
         private void didWriteData(File file, long availableSize, boolean last) {
             if (videoConvertFirstWrite) {
                 FileLoader.getInstance(currentAccount).uploadFile(file.toString(), isSecretChat, false, 1, ConnectionsManager.FileTypeVideo, false);
@@ -4063,14 +4122,20 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                                     } catch (Exception e) {
                                         e.printStackTrace();
                                     }
-                                    if (availableSize != 0 && !writingToDifferentFile && allowSendingWhileRecording) {
-                                        didWriteData(videoFile, availableSize, false);
+                                    if (availableSize != 0) {
+                                        maybeRatchetBitrateForSizeBudget(availableSize, bufferInfo.presentationTimeUs);
+                                        if (!writingToDifferentFile && allowSendingWhileRecording) {
+                                            didWriteData(videoFile, availableSize, false);
+                                        }
                                     }
                                 });
                             } else {
                                 long availableSize = mediaMuxer.writeSampleData(videoTrackIndex, encodedData, videoBufferInfo, true);
-                                if (availableSize != 0 && !writingToDifferentFile && allowSendingWhileRecording) {
-                                    didWriteData(videoFile, availableSize, false);
+                                if (availableSize != 0) {
+                                    maybeRatchetBitrateForSizeBudget(availableSize, videoBufferInfo.presentationTimeUs);
+                                    if (!writingToDifferentFile && allowSendingWhileRecording) {
+                                        didWriteData(videoFile, availableSize, false);
+                                    }
                                 }
                             }
                         } else if (videoTrackIndex == -5) {

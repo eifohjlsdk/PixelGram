@@ -1190,6 +1190,65 @@ every existing call site already passes in-bounds, valid values - these are
 defense-in-depth checks against future/tampered callers, not fixes to an
 observed bug.
 
+## File size cap: bitrate options, a pre-recording budget, and a live ratchet-down fallback (2026-09-05)
+
+Telegram limits round video by file size, not resolution or duration on
+their own - measured (640px, 60s): 1Mbps video (11.12MB total) is accepted
+as a round message; 2Mbps (15.61MB) is silently reclassified as a normal
+video instead of rejected outright. That test was shot in near-darkness,
+which compresses well below its nominal bitrate - a bright, detailed scene
+at the same settings would land closer to what the bitrate actually implies,
+so any safeguard needs to budget for that, not for what the dark test
+happened to produce.
+
+**Checked whether the client has an exact number for this rather than
+bisecting**: it doesn't. Grepped the whole tree (`SendMessagesHelper.java`,
+`MediaController.java`, `MessagesController.java`) for a round-video-
+specific size or byte-count constant - nothing. `MessagesController`'s
+`roundVideoSize` is a server-pushed *resolution* default (384px), unrelated
+to file size. The reclassification threshold is server-side and not present
+anywhere in this client's source; bisection is the only way to find it.
+
+**Added:**
+- Intermediate video bitrate options at 1.1, 1.25, 1.4, 1.6, and 1.75 Mbps
+  (`PixelGramSettingsActivity.showVideoBitrateDialog`) alongside the
+  existing 1.2/1.5 Mbps.
+- `PixelGramSettings.ROUND_VIDEO_SAFE_MAX_BYTES` (9.5MB) - a worst-case
+  budget set well under the confirmed-accepted 11.12MB and clear of the
+  confirmed-reclassified 15.61MB, precisely because the measurement it's
+  based on was shot in conditions that compress unusually well.
+  `capVideoBitrateForSizeBudget(videoBps, audioBps, durationMs)` nets the
+  audio track's bitrate *out of* the same budget rather than adding it on
+  top, and clamps the requested video bitrate down (never up) so a full
+  `ROUND_VIDEO_MAX_DURATION_MS` (60s) recording projects to fit, minus an
+  estimated 3% for MP4 container overhead (moov atom, sample tables). Called
+  once in `InstantCameraView.startRecording()` before the encoder is
+  configured, so it affects the actual recording bitrate, not just what the
+  picker offers - selecting a higher bitrate for a long recording quietly
+  gets capped rather than silently risking reclassification. At the default
+  96kbps audio bitrate this doesn't touch anything below ~1.13Mbps, so the
+  existing 1.0Mbps default is unaffected.
+- **Live fallback**, since the pre-recording cap assumes the encoder spends
+  close to its full allotted bitrate, and a busier scene than whatever it
+  was budgeted against can still outrun it mid-recording:
+  `InstantCameraView` already computes a real cumulative on-disk file size
+  every ~32KB (`MP4Builder.writeSampleData`'s return value, previously used
+  only to drive the progressive-upload-while-recording feature) - reused
+  that existing running counter rather than adding a second one. Once at
+  least 2 seconds in, it projects that rate forward to the full 60s and, if
+  the projection would exceed the safe budget, ratchets the live encoder
+  down via `MediaCodec.setParameters(PARAMETER_KEY_VIDEO_BITRATE, ...)` for
+  the remaining time - a one-shot, ratchet-down-only adjustment (checked
+  each time but only fires once per recording).
+
+Verified via `:TMessagesProj_App:compileAfatDebugJavaWithJavac` (temporarily
+reverting the applicationId change above to work around the Firebase config
+gate, then restoring it - see the package ID section). Not verified against
+an actual overshoot recording on-device; the arithmetic was checked by hand
+(at 96kbps audio, the 9.5MB/60s budget nets to ~1.13Mbps max video bitrate,
+consistent with 2Mbps having been the confirmed-reclassified data point) but
+the live ratchet path specifically has not been exercised end-to-end.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
