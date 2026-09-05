@@ -1957,6 +1957,57 @@ compounds with this app's own existing supersample-to-circle crop.
 
 Verified via `:TMessagesProj_App:compileAfatDebugJavaWithJavac`.
 
+## Preview Stabilization crop measured: no measurable crop on a static mount (2026-09-05)
+
+Recorded two clips (`1788623778292.mp4` off, `1788623812783.mp4` on),
+phone static on a stand pointed at a fixed scene, unmoved between them. No
+image library was available in this environment (no PIL/numpy/cv2/
+ImageMagick) - wrote a small pure-Python PNG decoder and measured pixel
+brightness profiles directly against a rigid reference (a wall mirror
+visible in both clips), at two independent, well-separated timestamps per
+clip to guard against a one-frame fluke:
+
+| Clip | Frame A width | Frame B width |
+|---|---|---|
+| Stabilization off | 61.0px | 59.5px |
+| Stabilization on | 61.5px | 61.0px |
+
+Average off ≈60.25px, on ≈61.25px - about 1.7% larger on, which is smaller
+than this measurement's own noise floor (edge-picking precision on a ~60px
+feature is realistically ±2-5%). Confirmed visually too: cropping both
+frames to an identical window and viewing them side by side shows the
+mirror at essentially the same size and position in both. **No crop
+distinguishable from zero, well under Android's own "up to 20%" documented
+guidance.**
+
+**This is a floor, not the real-world figure.** Preview Stabilization's
+crop margin is understood to be reserved for compensating actual detected
+motion, not a fixed always-on crop - the phone was genuinely static on a
+stand, so there was no shake to correct, and it appears to have used
+little to none of its available margin. Round video and voice messages are
+recorded handheld in practice, where real hand-shake would likely draw on
+that margin and produce a real, larger crop than this test can reveal. Not
+pursued further per instruction - a handheld on/off pair would be needed to
+pin down the actual figure if that's wanted later.
+
+**Compounding with the existing crop chain** (3440x2448 sensor active array
+down to the round-video circle):
+
+| Stage | Area retained | Cumulative |
+|---|---|---|
+| Center-square crop (3440->2448 width, height untouched) | 2448/3440 = 71.2% | 71.2% |
+| Downscales (2448->1920->640) | 100% (same aspect ratio) | 71.2% |
+| Circular mask (inscribed circle in the square) | pi/4 = 78.5% | **55.9%** |
+| Preview Stabilization - as measured here (static) | ~100% | **55.9%** |
+| Preview Stabilization - Android's "up to 20%" guidance (plausible handheld case) | (1-0.20)^2 = 64% | **35.8%** |
+
+Even before Preview Stabilization, only ~56% of the sensor's active area
+ends up visible in the circle - the existing framing cost. As measured on
+a static mount, stabilization adds no further loss on top of that; if a
+handheld recording draws on the full margin Android describes, the total
+could drop to ~36% of the sensor's area. Ships default off; the static-mount
+number should be treated as a floor, not planned around.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
