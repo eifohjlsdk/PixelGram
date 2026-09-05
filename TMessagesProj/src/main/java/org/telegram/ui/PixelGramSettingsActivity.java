@@ -82,10 +82,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int tonemapModeRow;
     private int faceAeMeteringRow;
     private int lowLightBoostRow;
-    // TEMPORARY investigation scaffolding (see PixelGramSettings.KEY_LLB_TEST_FPS_RANGE) - only
-    // added to the row list when BuildVars.DEBUG_VERSION; stays -1 (never matches a real
-    // position) otherwise. Remove together with the setting once LLB's default is settled.
-    private int llbTestFpsRangeRow = -1;
+    private int lowLightBoostInfoRow;
     private int exposureCompensationRow;
     private int downscaleFilterRow;
     private int ditherAmountRow;
@@ -162,9 +159,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
         faceAeMeteringRow = rowCount++;
         lowLightBoostAvailable = Camera2Session.queryLowLightBoostSupported(true) && Camera2Session.queryLowLightBoostSupported(false);
         lowLightBoostRow = rowCount++;
-        if (BuildVars.DEBUG_VERSION) {
-            llbTestFpsRangeRow = rowCount++;
-        }
+        lowLightBoostInfoRow = rowCount++;
         exposureCompensationRow = rowCount++;
         downscaleFilterRow = rowCount++;
         ditherAmountRow = rowCount++;
@@ -247,8 +242,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     PixelGramSettings.setLowLightBoostEnabled(!PixelGramSettings.isLowLightBoostEnabled());
                     ((TextCheckCell) view).setChecked(PixelGramSettings.isLowLightBoostEnabled());
                 }
-            } else if (position == llbTestFpsRangeRow) {
-                showLlbTestFpsRangeDialog();
             } else if (position == exposureCompensationRow) {
                 showExposureCompensationDialog();
             } else if (position == downscaleFilterRow) {
@@ -385,21 +378,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
         builder.setItems(options, (dialog, which) -> {
             PixelGramSettings.setResolution(values[which]);
             listAdapter.notifyItemChanged(resolutionRow);
-        });
-        showDialog(builder.create());
-    }
-
-    // TEMPORARY investigation scaffolding (see PixelGramSettings.KEY_LLB_TEST_FPS_RANGE) - only
-    // reachable when llbTestFpsRangeRow exists (BuildVars.DEBUG_VERSION). Remove together with the
-    // setting once Low Light Boost's default is settled.
-    private void showLlbTestFpsRangeDialog() {
-        CharSequence[] options = {"Auto (default, today's behavior)", "[30,30]", "[24,30]", "[15,30]"};
-        int[] values = {PixelGramSettings.LLB_TEST_FPS_AUTO, PixelGramSettings.LLB_TEST_FPS_30_30, PixelGramSettings.LLB_TEST_FPS_24_30, PixelGramSettings.LLB_TEST_FPS_15_30};
-        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-        builder.setTitle("LLB Test FPS Range (DEBUG)");
-        builder.setItems(options, (dialog, which) -> {
-            PixelGramSettings.setLlbTestFpsRange(values[which]);
-            listAdapter.notifyItemChanged(llbTestFpsRangeRow);
         });
         showDialog(builder.create());
     }
@@ -779,16 +757,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return mode == PixelGramSettings.TONEMAP_MODE_HIGH_QUALITY ? "High Quality" : "Fast";
     }
 
-    // TEMPORARY investigation scaffolding - see PixelGramSettings.KEY_LLB_TEST_FPS_RANGE.
-    private static String llbTestFpsRangeName(int mode) {
-        switch (mode) {
-            case PixelGramSettings.LLB_TEST_FPS_30_30: return "[30,30]";
-            case PixelGramSettings.LLB_TEST_FPS_24_30: return "[24,30]";
-            case PixelGramSettings.LLB_TEST_FPS_15_30: return "[15,30]";
-            default: return "Auto (default)";
-        }
-    }
-
     private static String formatMicGain(int mode) {
         switch (mode) {
             case PixelGramSettings.MIC_GAIN_1_5X: return "1.5x";
@@ -891,7 +859,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || pos == resolutionRow || pos == videoBitrateRow || pos == audioBitrateRow
                     || pos == debugLoggingRow
                     || pos == noiseReductionRow || pos == edgeModeRow || pos == tonemapModeRow || pos == faceAeMeteringRow || pos == exposureCompensationRow
-                    || (pos == lowLightBoostRow && lowLightBoostAvailable) || pos == llbTestFpsRangeRow
+                    || (pos == lowLightBoostRow && lowLightBoostAvailable)
                     || pos == downscaleFilterRow || pos == ditherAmountRow
                     || pos == voiceEnhancementRow
                     || (pos == noiseSuppressionRow && NoiseSuppressor.isAvailable())
@@ -975,8 +943,6 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndValue("Edge Mode", modeName(PixelGramSettings.getEdgeMode(), PixelGramSettings.EDGE_MODE_OFF, PixelGramSettings.EDGE_MODE_FAST, PixelGramSettings.EDGE_MODE_HIGH_QUALITY), true);
                     } else if (position == tonemapModeRow) {
                         cell.setTextAndValue("Tone Mapping", tonemapModeName(PixelGramSettings.getTonemapMode()), true);
-                    } else if (position == llbTestFpsRangeRow) {
-                        cell.setTextAndValue("LLB Test FPS Range (DEBUG)", llbTestFpsRangeName(PixelGramSettings.getLlbTestFpsRange()), true);
                     } else if (position == exposureCompensationRow) {
                         cell.setTextAndValue("Exposure Compensation", formatEv(PixelGramSettings.getExposureCompensationEv()), false);
                     } else if (position == downscaleFilterRow) {
@@ -1052,6 +1018,13 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setText("PixelGram version: " + BuildVars.PIXELGRAM_VERSION
                                 + "\nBased on Telegram: " + currentVersionName()
                                 + "\nLast checked: " + formatLastCheck(PixelGramSettings.getLastUpdateCheckMs()));
+                    } else if (position == lowLightBoostInfoRow) {
+                        // Measured on-device (see FINDINGS.md's Low Light Boost section): realized
+                        // frame rate came in at 14-17fps regardless of the requested AE target fps
+                        // range, roughly half of normal - the HAL extends exposure past the frame
+                        // budget and the fixed range does not constrain it.
+                        TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
+                        cell.setText("Brightens dim scenes, but measured at roughly half the normal frame rate (14-17fps vs ~30fps) - visibly choppy for a talking head. Off is recommended for round video and voice messages.");
                     }
                     break;
                 }
@@ -1067,7 +1040,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
             } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == lowLightBoostRow
                     || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow) {
                 return TYPE_CHECK;
-            } else if (position == updateInfoRow) {
+            } else if (position == updateInfoRow || position == lowLightBoostInfoRow) {
                 return TYPE_INFO;
             } else {
                 return TYPE_SETTINGS;

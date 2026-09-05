@@ -1876,6 +1876,59 @@ the test log:
 adb logcat -d -s PixelCamera:D | grep LlbProbe
 ```
 
+## Low Light Boost measured: HAL slows down regardless of the fixed AE range - shipping off (2026-09-05)
+
+Full 8-condition matrix recorded in one dim-room session (Auto/[30,30]/[24,30]/[15,30],
+each on and off) and analyzed via the `LlbProbe` log (1215 lines).
+
+**`CONTROL_LOW_LIGHT_BOOST_STATE` reported ACTIVE (`1`) on all 1215 logged
+frames, across all three requested fps ranges** - it engages unconditionally
+in a dim scene, not gated by which range was requested.
+
+**Realized frame rate was 13.9-17.1fps, regardless of the requested range**:
+
+| Requested range | Frames | Realized fps |
+|---|---|---|
+| `[30,30]` (clip 1) | 245 | 13.9 |
+| `[30,30]` (clip 2) | 281 | 14.2 |
+| `[24,30]` | 250 | 14.9 |
+| `[15,30]` | 439 | 17.1 |
+
+This answers the arbitration question this feature was gated on: **the HAL
+extends exposure past the frame budget, and the fixed `[30,30]` range does
+not constrain it** - a *fixed* request still only realized ~14fps, roughly
+half of the ~30.0fps this app normally achieves (per the earlier
+AE-fps-range-fix measurement). This is the same failure mode the AE-fps-range
+fix addressed in the first place - requested rate disagreeing with delivered
+rate - just from a different cause (LLB's own exposure extension winning
+arbitration, not an unsupported range being silently ignored). The mild
+upward gradient across the three ranges (13.9 -> 14.9 -> 17.1 as the allowed
+floor drops) is one or two ~10s samples per range and should not be read as
+a confirmed trend - could easily be scene-to-scene variability across
+separate takes rather than a real effect of the requested bound.
+
+**Decision: ship as a setting, default off, not pursued further.** 14fps is
+visibly choppy for a talking head - halving the frame rate for brightness is
+the wrong trade for round video/voice messages. The settings screen now
+states this tradeoff directly (see `lowLightBoostInfoRow`) rather than
+leaving it to be discovered. The off-baseline (what fps this same dim scene
+would show *without* LLB) was not pursued - not needed to conclude the
+trade-off is unfavorable.
+
+**Logging design gap, for future reference**: `logLowLightBoostState()` only
+logs when the setting is enabled (`PixelGramSettings.isLowLightBoostEnabled()`
+gates the whole method), so no off-baseline was ever capturable from this
+log - the four "off" clips in the matrix produced zero `LlbProbe` lines by
+design, not by omission. A future investigation needing an on/off frame-rate
+comparison from a single log would need `SENSOR_TIMESTAMP` logged
+unconditionally, gating only the `CONTROL_LOW_LIGHT_BOOST_STATE` field on
+the setting.
+
+The debug-only "LLB Test FPS Range" selector (`PixelGramSettings.KEY_LLB_TEST_FPS_RANGE`,
+`Camera2Session.llbTestFpsRangeOverride()`) has been removed now that the
+measurement is done - it was always scoped as temporary investigation
+scaffolding, not a shipped feature.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

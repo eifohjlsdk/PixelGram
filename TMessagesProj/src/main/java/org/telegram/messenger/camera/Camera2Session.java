@@ -34,7 +34,6 @@ import androidx.annotation.RequiresApi;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
-import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
@@ -234,18 +233,6 @@ public class Camera2Session {
             final Float value = cameraCharacteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
             maxZoom = (value == null || value < 1f) ? 1f : value;
             targetFpsRange = pickTargetFpsRange(cameraCharacteristics, cameraId, isFront);
-            // TEMPORARY investigation scaffolding for the Low Light Boost measurement (see
-            // FINDINGS.md and PixelGramSettings.KEY_LLB_TEST_FPS_RANGE) - debug-only override of
-            // the auto-picked range above, forcing a specific fps range so LLB's effect on
-            // realized fps can be measured against [30,30]/[24,30]/[15,30]. Remove together with
-            // the setting once LLB's default is settled.
-            if (BuildVars.DEBUG_VERSION) {
-                Range<Integer> llbTestOverride = llbTestFpsRangeOverride(PixelGramSettings.getLlbTestFpsRange());
-                if (llbTestOverride != null) {
-                    PixelCameraLog.d("camera #" + cameraId + ": LLB test override forcing target fps range to " + llbTestOverride + " (auto-picked would have been " + targetFpsRange + ")");
-                    targetFpsRange = llbTestOverride;
-                }
-            }
             afContinuousVideoSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO, "CONTROL_AF_MODE_CONTINUOUS_VIDEO");
             videoStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON, "CONTROL_VIDEO_STABILIZATION_MODE_ON");
             opticalStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON, "LENS_OPTICAL_STABILIZATION_MODE_ON");
@@ -296,25 +283,6 @@ public class Camera2Session {
             }
         }
         return chosen;
-    }
-
-    /** TEMPORARY investigation scaffolding - see PixelGramSettings.KEY_LLB_TEST_FPS_RANGE. Maps
-     * the debug-only test selector to an actual Range, or null for AUTO (leave targetFpsRange as
-     * pickTargetFpsRange() already chose it). Deliberately doesn't check the range against
-     * CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES first - part of what's being measured is what
-     * happens if it's requested anyway (matches how the original [30,60] upstream bug behaved:
-     * an unsupported range wasn't rejected, just silently ignored/free-run). */
-    private static Range<Integer> llbTestFpsRangeOverride(int mode) {
-        switch (mode) {
-            case PixelGramSettings.LLB_TEST_FPS_30_30:
-                return new Range<>(30, 30);
-            case PixelGramSettings.LLB_TEST_FPS_24_30:
-                return new Range<>(24, 30);
-            case PixelGramSettings.LLB_TEST_FPS_15_30:
-                return new Range<>(15, 30);
-            default:
-                return null;
-        }
     }
 
     private static boolean supportsMode(int[] available, int mode) {
