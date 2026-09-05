@@ -1834,6 +1834,48 @@ exercised against an actual mismatch (there isn't one to reproduce right
 now - this is a guard against a *future* regression, not a fix for a
 current bug).
 
+## Low Light Boost implemented as a setting, default off, with test instrumentation (2026-09-05)
+
+Implements the plan reported earlier (see "Low Light Boost: static
+characteristics confirmed" above) - nothing shipped on by default, per the
+explicit instruction not to until measured.
+
+- `PixelGramSettings.isLowLightBoostEnabled()`/`setLowLightBoostEnabled()`,
+  default off. Wired into `Camera2Session.updateCaptureRequest()`: when on
+  and `lowLightBoostSupported` (checked the same way as the existing
+  stabilization/AF capability flags), explicitly sets `CONTROL_AE_MODE` to
+  `CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY` (6). This is the
+  *first* explicit `CONTROL_AE_MODE` set anywhere in `Camera2Session` - it
+  was never touched before (relying on the capture template's own default),
+  so the off-path is completely unchanged from before this setting existed.
+- Settings row added under "Quality" (`lowLightBoostRow`), gated on both
+  cameras supporting it (`Camera2Session.queryLowLightBoostSupported`,
+  cached once in `buildRows()` rather than queried per-bind).
+- Per-frame logging added to the existing `onCaptureCompleted` callback:
+  `CONTROL_LOW_LIGHT_BOOST_STATE` and `SENSOR_TIMESTAMP`, tagged
+  `LlbProbe`, active only while the setting is on. Deliberately *not*
+  rate-limited like the existing zoom/crop readback log - the point is
+  measuring realized fps from consecutive frame timestamps, which needs
+  every frame, not a once-a-second sample.
+- **Debug-only test scaffolding** (`BuildVars.DEBUG_VERSION`-gated,
+  clearly marked temporary throughout, to be removed once LLB's default is
+  settled): a "LLB Test FPS Range" row forcing `targetFpsRange` to
+  `[30,30]`/`[24,30]`/`[15,30]` instead of the normal auto-pick, since no
+  real fps-range setting exists to test the complication described (the
+  fixed `[30,30]` range possibly conflicting with LLB's exposure-extension
+  brightening mechanism). Deliberately does *not* check the requested range
+  against `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` first - part of what's
+  being measured is what happens if an unsupported range is requested
+  anyway, matching how the original upstream `[30,60]` bug behaved (silently
+  ignored/free-run rather than rejected).
+
+Verified via `:TMessagesProj_App:compileAfatDebugJavaWithJavac`. Not yet
+tested against an actual dim scene - waiting on that recording. To capture
+the test log:
+```
+adb logcat -d -s PixelCamera:D | grep LlbProbe
+```
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

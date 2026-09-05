@@ -82,6 +82,7 @@ public class Camera2Session {
     private boolean afContinuousVideoSupported;
     private boolean videoStabilizationSupported;
     private boolean opticalStabilizationSupported;
+    private boolean lowLightBoostSupported;
     private boolean faceDetectFullSupported;
     private int[] availableNoiseReductionModes = new int[0];
     private int[] availableEdgeModes = new int[0];
@@ -216,6 +217,7 @@ public class Camera2Session {
             @Override
             public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {
                 logZoomCropReadback(result);
+                logLowLightBoostState(result);
                 onFaceDetectionResult(result);
             }
         };
@@ -232,9 +234,22 @@ public class Camera2Session {
             final Float value = cameraCharacteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
             maxZoom = (value == null || value < 1f) ? 1f : value;
             targetFpsRange = pickTargetFpsRange(cameraCharacteristics, cameraId, isFront);
+            // TEMPORARY investigation scaffolding for the Low Light Boost measurement (see
+            // FINDINGS.md and PixelGramSettings.KEY_LLB_TEST_FPS_RANGE) - debug-only override of
+            // the auto-picked range above, forcing a specific fps range so LLB's effect on
+            // realized fps can be measured against [30,30]/[24,30]/[15,30]. Remove together with
+            // the setting once LLB's default is settled.
+            if (BuildVars.DEBUG_VERSION) {
+                Range<Integer> llbTestOverride = llbTestFpsRangeOverride(PixelGramSettings.getLlbTestFpsRange());
+                if (llbTestOverride != null) {
+                    PixelCameraLog.d("camera #" + cameraId + ": LLB test override forcing target fps range to " + llbTestOverride + " (auto-picked would have been " + targetFpsRange + ")");
+                    targetFpsRange = llbTestOverride;
+                }
+            }
             afContinuousVideoSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO, "CONTROL_AF_MODE_CONTINUOUS_VIDEO");
             videoStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON, "CONTROL_VIDEO_STABILIZATION_MODE_ON");
             opticalStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON, "LENS_OPTICAL_STABILIZATION_MODE_ON");
+            lowLightBoostSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES, CameraMetadata.CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY, "CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY");
             faceDetectFullSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES, CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL, "STATISTICS_FACE_DETECT_MODE_FULL");
             availableNoiseReductionModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES);
             availableEdgeModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
@@ -281,6 +296,25 @@ public class Camera2Session {
             }
         }
         return chosen;
+    }
+
+    /** TEMPORARY investigation scaffolding - see PixelGramSettings.KEY_LLB_TEST_FPS_RANGE. Maps
+     * the debug-only test selector to an actual Range, or null for AUTO (leave targetFpsRange as
+     * pickTargetFpsRange() already chose it). Deliberately doesn't check the range against
+     * CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES first - part of what's being measured is what
+     * happens if it's requested anyway (matches how the original [30,60] upstream bug behaved:
+     * an unsupported range wasn't rejected, just silently ignored/free-run). */
+    private static Range<Integer> llbTestFpsRangeOverride(int mode) {
+        switch (mode) {
+            case PixelGramSettings.LLB_TEST_FPS_30_30:
+                return new Range<>(30, 30);
+            case PixelGramSettings.LLB_TEST_FPS_24_30:
+                return new Range<>(24, 30);
+            case PixelGramSettings.LLB_TEST_FPS_15_30:
+                return new Range<>(15, 30);
+            default:
+                return null;
+        }
     }
 
     private static boolean supportsMode(int[] available, int mode) {
@@ -454,6 +488,12 @@ public class Camera2Session {
         return characteristics == null ? null : characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP);
     }
 
+    public static boolean queryLowLightBoostSupported(boolean front) {
+        CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
+        if (characteristics == null) return false;
+        return supportsMode(characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES), CameraMetadata.CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY);
+    }
+
     // Called on the tg_camera2 handler thread for every completed capture while a
     // repeating request is active. Feeds face detection (STATISTICS_FACES, enabled
     // via STATISTICS_FACE_DETECT_MODE_FULL above) into CONTROL_AE_REGIONS, but only
@@ -473,6 +513,20 @@ public class Camera2Session {
         PixelCameraLog.d("camera #" + cameraId + ": requested zoomRatio=" + currentZoom + " cropRegion=" + cropRegion
                 + " | HAL-applied zoomRatio=" + appliedZoomRatio + " cropRegion=" + appliedCrop
                 + " | sensorSize=" + sensorSize);
+    }
+
+    // TEMPORARY investigation scaffolding for the Low Light Boost measurement (see FINDINGS.md) -
+    // logs every single frame, deliberately not rate-limited like logZoomCropReadback() above,
+    // since the whole point is measuring per-frame capture timestamps to compute realized fps and
+    // correlate it against when boost actually engages. Only active when the setting itself is on
+    // (off by default), so this doesn't affect normal recording. Remove together with the setting
+    // once LLB's default is settled.
+    private void logLowLightBoostState(CaptureResult result) {
+        if (!lowLightBoostSupported || !PixelGramSettings.isLowLightBoostEnabled()) return;
+        Integer state = Build.VERSION.SDK_INT >= 35 ? result.get(CaptureResult.CONTROL_LOW_LIGHT_BOOST_STATE) : null;
+        Long sensorTimestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
+        PixelCameraLog.d("LlbProbe camera #" + cameraId + ": lowLightBoostState=" + state
+                + " sensorTimestampNs=" + sensorTimestamp + " targetFpsRange=" + targetFpsRange);
     }
 
     private void onFaceDetectionResult(CaptureResult result) {
@@ -860,6 +914,19 @@ public class Camera2Session {
                         captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
                     } catch (Exception e) {
                         PixelCameraLog.w("camera #" + cameraId + ": CONTROL_AF_MODE set failed", e);
+                    }
+                }
+
+                // Off by default (PixelGramSettings.DEFAULT_LOW_LIGHT_BOOST) and unmeasured - see
+                // FINDINGS.md's Low Light Boost section for why (the fixed [30,30] AE target fps
+                // range above may conflict with how the HAL brightens). Only ever explicitly set
+                // when actually enabled and supported - leaves the template's own default
+                // CONTROL_AE_MODE untouched otherwise, same as before this setting existed.
+                if (lowLightBoostSupported && PixelGramSettings.isLowLightBoostEnabled()) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": CONTROL_AE_MODE (low light boost) set failed", e);
                     }
                 }
 

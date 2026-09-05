@@ -111,6 +111,12 @@ public class PixelGramSettings {
     private static final String KEY_EDGE_MODE = "edge_mode";
     private static final String KEY_TONEMAP_MODE = "tonemap_mode";
     private static final String KEY_FACE_AE_METERING = "face_ae_metering";
+    private static final String KEY_LOW_LIGHT_BOOST = "low_light_boost_enabled";
+    // TEMPORARY investigation scaffolding for the Low Light Boost measurement (see FINDINGS.md) -
+    // debug-only override of the auto-picked CONTROL_AE_TARGET_FPS_RANGE, so [24,30]/[15,30] can
+    // be tested against LLB without a real fps-range setting existing in the shipped UI. Remove
+    // once the LLB default is settled and this test selector is no longer needed.
+    private static final String KEY_LLB_TEST_FPS_RANGE = "llb_test_fps_range_DEBUG_ONLY";
     private static final String KEY_EXPOSURE_COMPENSATION = "exposure_compensation_ev";
     private static final String KEY_RESOLUTION = "resolution";
     private static final String KEY_VIDEO_BITRATE = "video_bitrate";
@@ -149,6 +155,25 @@ public class PixelGramSettings {
     // since it's the cheaper of two options that look the same.
     public static final int DEFAULT_TONEMAP_MODE = TONEMAP_MODE_FAST;
     public static final boolean DEFAULT_FACE_AE_METERING = false;
+
+    /** CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY (6) - confirmed available on both
+     * cameras with CONTROL_LOW_LIGHT_BOOST_INFO_LUMINANCE_RANGE [0.1, 15.0] lux (see FINDINGS.md's
+     * Low Light Boost section). Off by default until measured against the fixed [30,30]
+     * CONTROL_AE_TARGET_FPS_RANGE this app already sets - the HAL's documented brightening
+     * mechanism (extending exposure time) may or may not be able to do anything useful capped at
+     * 33ms/frame, and which one arbitrates isn't documented. See DEFAULT_LLB_TEST_FPS_RANGE. */
+    public static final boolean DEFAULT_LOW_LIGHT_BOOST = false;
+
+    // TEMPORARY investigation scaffolding - see KEY_LLB_TEST_FPS_RANGE's own comment. AUTO leaves
+    // Camera2Session's normal auto-picked target fps range untouched (today's behavior,
+    // regardless of DEFAULT_LOW_LIGHT_BOOST); the other three force a specific range so Low Light
+    // Boost can be measured against [30,30] (today's normal range) as well as two wider ranges
+    // that would let the HAL actually slow down if that's how it brightens.
+    public static final int LLB_TEST_FPS_AUTO = 0;
+    public static final int LLB_TEST_FPS_30_30 = 1;
+    public static final int LLB_TEST_FPS_24_30 = 2;
+    public static final int LLB_TEST_FPS_15_30 = 3;
+    public static final int DEFAULT_LLB_TEST_FPS_RANGE = LLB_TEST_FPS_AUTO;
     public static final float DEFAULT_EXPOSURE_COMPENSATION = 0.0f;
     // Set from A/B testing across the full resolution range (see FINDINGS.md): resolution
     // mattered more than bitrate, and Lanczos looked clearly better than Box/Gaussian. 640 is
@@ -291,6 +316,23 @@ public class PixelGramSettings {
 
     public static void setFaceAeMeteringEnabled(boolean enabled) {
         prefs().edit().putBoolean(KEY_FACE_AE_METERING, enabled).apply();
+    }
+
+    public static boolean isLowLightBoostEnabled() {
+        return prefs().getBoolean(KEY_LOW_LIGHT_BOOST, DEFAULT_LOW_LIGHT_BOOST);
+    }
+
+    public static void setLowLightBoostEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_LOW_LIGHT_BOOST, enabled).apply();
+    }
+
+    /** TEMPORARY investigation scaffolding - see KEY_LLB_TEST_FPS_RANGE's own comment. */
+    public static int getLlbTestFpsRange() {
+        return prefs().getInt(KEY_LLB_TEST_FPS_RANGE, DEFAULT_LLB_TEST_FPS_RANGE);
+    }
+
+    public static void setLlbTestFpsRange(int mode) {
+        prefs().edit().putInt(KEY_LLB_TEST_FPS_RANGE, mode).apply();
     }
 
     public static float getExposureCompensationEv() {
@@ -717,6 +759,8 @@ public class PixelGramSettings {
                 .putInt(KEY_EDGE_MODE, DEFAULT_EDGE_MODE)
                 .putInt(KEY_TONEMAP_MODE, DEFAULT_TONEMAP_MODE)
                 .putBoolean(KEY_FACE_AE_METERING, DEFAULT_FACE_AE_METERING)
+                .putBoolean(KEY_LOW_LIGHT_BOOST, DEFAULT_LOW_LIGHT_BOOST)
+                .putInt(KEY_LLB_TEST_FPS_RANGE, DEFAULT_LLB_TEST_FPS_RANGE)
                 .putFloat(KEY_EXPOSURE_COMPENSATION, DEFAULT_EXPOSURE_COMPENSATION)
                 .putInt(KEY_RESOLUTION, DEFAULT_RESOLUTION)
                 .putInt(KEY_VIDEO_BITRATE, DEFAULT_VIDEO_BITRATE)
