@@ -2680,3 +2680,77 @@ not yet measured against a real recording at these new defaults - the next
 on-device comparison (CAMCORDER + these constants vs. the iPhone) will show
 whether the audio gap narrows as expected or whether pumping becomes
 audible at this setting.
+
+## Per-axis Lanczos fix measured: further recovery, 0.60x of iPhone's variance (2026-09-05)
+
+Recorded one more matched pair (PixelGram + iPhone, same scene/distance) on
+the build with the per-axis ratio fix applied, still at `capture:1920x1080`
+(confirmed via the marker log) - the same non-square case that fix
+targets. Same resolution-normalized method (640x640 downscaled to the
+iPhone's native 400x400 via ffmpeg's `area` filter, then Laplacian
+variance):
+
+| Stage | Ratio to iPhone | Relative recovery from previous stage |
+|---|---|---|
+| Pre tap-spacing fix | 0.351x | - |
+| Post tap-spacing fix, shared-ratio bug present | 0.514x | +46.5% |
+| Post per-axis fix (this measurement) | 0.600x | +16.7% |
+
+Overall, +70.8% relative to the original pre-fix baseline. The per-axis fix
+recovered a further, real chunk of sharpness on top of the original
+tap-spacing fix - confirming the shared-ratio bug found last round was
+costing real detail on this device's non-square capture, not just a
+theoretical concern. Still below iPhone parity (0.60x, not 1.0x), and as
+before, each of these three numbers comes from a separately-recorded clip
+rather than repeated measurements of the same footage, so some of the
+movement between stages is inevitably scene/lighting variance rather than
+pure kernel effect - the direction and rough size of the improvement is
+credible, the exact percentages shouldn't be read as more precise than
+that.
+
+## Third audio sample: CAMCORDER did not close the treble deficit in this test (2026-09-05)
+
+Repeated the frequency-response comparison a third time, now with
+`voiceEnhancement:3` (CAMCORDER, confirmed via the marker log) and the
+retuned leveler (0.4s/1.2s) in place:
+
+| Band | Ours (sample 3, CAMCORDER) | iPhone (sample 3) | Ours (sample 2, MIC) | iPhone (sample 2) |
+|---|---|---|---|---|
+| Low (80-300Hz) | 74.5% | 42.1% | 70.8%/75.4% | 47.7%/50.5% |
+| Mid (300-2000Hz) | 20.7% | 55.3% | 23.6% | 41.7% |
+| High (2-6kHz) | 0.2% | 1.6% | 0.6% | 7.5% |
+| Very high (6-20kHz) | 0.0% | 0.2% | 0.4% | 0.3% |
+
+**The treble deficit did not close.** Low-band share (74.5%) sits squarely
+within the same 70.8-77.7% range both MIC/DEFAULT samples showed; the
+high/very-high bands remain heavily deficient relative to the iPhone, if
+anything slightly worse in absolute terms than sample 2. This directly
+contradicts the expectation set by the decision to revert to CAMCORDER (an
+~8.6dB measured advantage above 6kHz). **Read this result cautiously rather
+than as a refutation of that number** - every iPhone reference across all
+three samples also varies substantially in its own very-high-band share
+(1.3% / 0.3% / 0.2%), meaning take-to-take variance in this small,
+low-energy band is large relative to whatever a single AudioSource switch
+would move it by. A single-clip A/B (one CAMCORDER take vs. one iPhone
+take) is likely underpowered to detect an effect this size reliably against
+that much per-take noise. Either the platform-level AudioSource difference
+is real but swamped here by other variance, or it doesn't survive whatever
+else shapes this device's actual capture chain (mic hardware, the specific
+recording environment) end-to-end - this measurement can't distinguish
+those. Resolving this properly would need several repeated takes per
+source, not one, given the demonstrated variance.
+
+**Pumping check on the new leveler constants (0.4s attack/1.2s release)**:
+windowed (100ms) RMS-in-dB over the clip shows a clean single ramp - near-
+silence for the first ~0.3s, a quiet ~-45 to -50dB opening as speech
+begins, rising to a settled ~-20 to -30dB range by roughly t=2.5s, then no
+further systematic drift for the remaining ~6s of the clip (natural
+syllable-to-syllable variation within that range, consistent with ordinary
+speech dynamics rather than continued gain-hunting). This matches the
+predicted convergence behavior closely - settling well within the first
+few seconds rather than tracking the whole clip's duration, the problem
+the retune targeted. **This take doesn't resolve whether the faster
+release causes audible pumping specifically after a mid-recording pause**,
+since it contains one continuous phrase with no internal gap long enough
+to trigger a silence-freeze/re-attack cycle - confirming that specifically
+would need a take with a deliberate pause of a second or more mid-sentence.
