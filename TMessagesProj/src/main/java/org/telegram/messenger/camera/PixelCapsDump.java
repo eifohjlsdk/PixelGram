@@ -127,6 +127,11 @@ public class PixelCapsDump {
         logExplicit(sb, cameraId, "TONEMAP_MAX_CURVE_POINTS", c, CameraCharacteristics.TONEMAP_MAX_CURVE_POINTS);
         logExplicit(sb, cameraId, "REQUEST_AVAILABLE_CAPABILITIES", c, CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
         logExplicit(sb, cameraId, "CONTROL_AE_AVAILABLE_MODES", c, CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES);
+        // Low Light Boost (AE mode 6, AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY) investigation
+        // - see FINDINGS.md. This static luminance-range key is optional; the HAL not populating
+        // it doesn't mean the mode itself is unsupported, just that this particular hint isn't
+        // available - CONTROL_LOW_LIGHT_BOOST_STATE from capture results is the ground truth.
+        logExplicit(sb, cameraId, "CONTROL_LOW_LIGHT_BOOST_INFO_LUMINANCE_RANGE", c, CameraCharacteristics.CONTROL_LOW_LIGHT_BOOST_INFO_LUMINANCE_RANGE);
         logExplicit(sb, cameraId, "CONTROL_AWB_AVAILABLE_MODES", c, CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES);
         logExplicit(sb, cameraId, "CONTROL_AVAILABLE_SCENE_MODES", c, CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES);
         logExplicit(sb, cameraId, "SENSOR_INFO_EXPOSURE_TIME_RANGE", c, CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);

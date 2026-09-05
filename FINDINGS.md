@@ -1281,6 +1281,49 @@ fingerprint (both already computed as part of this fork's own release
 process - see the "Release 1.0.2 to publish" workflow - just not previously
 written down anywhere a sideloader could check them against).
 
+## Low Light Boost: static characteristics confirmed, dynamic test not yet run (2026-09-05)
+
+Investigation requested before any implementation - static characteristics
+only below, nothing changed in the actual capture path.
+
+- `CONTROL_AE_AVAILABLE_MODES` includes mode 6
+  (`AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY`) on **both** cameras:
+  camera 0 (back) `[0, 1, 2, 3, 6]`, camera 1 (front) `[0, 1, 6]`. Confirmed
+  live via `PixelCapsDump` on-device, not just documentation.
+- `CONTROL_LOW_LIGHT_BOOST_INFO_LUMINANCE_RANGE` = `[0.1, 15.0]` lux on both
+  cameras - wasn't previously dumped by `PixelCapsDump`; added as an explicit
+  key (harmless, permanent addition to the existing capabilities dump, same
+  as the other `logExplicit()` calls). This is the illuminance band the HAL
+  itself expects to engage boost within - useful for judging whether a given
+  test scene is actually dark enough for the mode to matter, before spending
+  time on the fps/bitrate comparison below.
+- The complication as described is real and unresolved by this
+  investigation: this app already hardcodes a fixed `CONTROL_AE_TARGET_FPS_RANGE`
+  (currently `[30,30]`, see the AE target fps range fix earlier in this file)
+  precisely to stop the ISP free-running: to 59fps at half the
+  bits-per-frame. Low Light Boost's own documented brightening mechanism is
+  extending exposure time, which is exactly what a fixed 30fps range already
+  caps at 33ms/frame. Which one wins - the HAL respecting the fixed range and
+  boost doing less than it could, or boost overriding the range and frame
+  rate dropping - isn't stated in the platform docs and isn't something static
+  characteristics can answer.
+
+**Not yet done: the actual dynamic test** (enable the mode, log
+`CONTROL_LOW_LIGHT_BOOST_STATE` and per-frame capture timestamps, measure
+realized fps/bits-per-frame at `[30,30]` vs `[24,30]` vs `[15,30]` in a dim
+scene). This needs code changes to `Camera2Session.java`'s capture request
+(setting `CONTROL_AE_MODE` to 6 and each fps range in turn) that weren't
+made, and - unlike the file-size bisection or the AE-region test earlier in
+this file - a **genuinely dim scene in the HAL's own stated [0.1, 15] lux
+engagement band**, which isn't something reachable from this environment
+(no control over the device's physical surroundings). Recommend the actual
+test run with a real dim scene (e.g. a dark room, lights off) rather than
+guessed-at "dim enough" conditions, since a scene outside the engagement
+band would just show the mode never activating and produce a false "no
+difference" result. Holding off on the `Camera2Session.java` change itself
+until that's confirmed feasible, per "don't ship it on by default until
+measured."
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
