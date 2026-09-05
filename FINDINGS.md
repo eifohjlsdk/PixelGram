@@ -1666,6 +1666,34 @@ upstream on its own merits, independent of anything else in this fork.
 recording (to confirm whether track durations actually converge, and
 whether any residual gap remains) hasn't been done yet.
 
+## Denoiser wet fraction moved from 60% to 80%: phase-artefact found at 70% and below (2026-09-05)
+
+Further listening (beyond the original 100%/90%/80%/70%/60% A/B pass in
+the "RNNoise" section above) found an audible stereo-like artefact at 70%
+wet and below - presumably a phase mismatch between the denoised and
+original (raw) signals becoming perceptible as more of the raw signal gets
+blended back in via the wet/dry mix. 80% avoids it while still giving the
+same fixed, predictable attenuation (rather than RNNoise's full
+suppression) that motivated the wet/dry blend in the first place.
+`DEFAULT_SPEECH_ENHANCEMENT_WET` moved from `0.6f` to `0.8f`.
+
+## Mic gain reverted from 1x back to 3x on round video: RNNoise doesn't add level (2026-09-05)
+
+The 1x default (see the "Mic gain split" section above) was reasoned from
+RNNoise's SNR improvement - the logic being that a cleaner signal needed
+less compensating gain. That reasoning doesn't hold up: RNNoise's SNR gain
+comes from *removing noise*, not from *adding level* - a quiet signal run
+through RNNoise is still a quiet signal, just a quieter-and-cleaner one, not
+a louder one. Gain (how loud the signal is) and denoising (how clean it is)
+are independent problems; improving one doesn't substitute for the other,
+and 1x was measurably too quiet in practice. `DEFAULT_MIC_GAIN` moved back
+to `MIC_GAIN_3X`, matching `DEFAULT_MIC_GAIN_VOICE_MESSAGE` - both paths
+now default to the same 3x measured in the original gain matrix (2x ->
++6.3dB, 3x -> +9.7dB, soft-limiter-protected, no clipping at 5x). The
+voice-message path's own gain still hasn't been independently measured
+(see the "Mic gain split" section) - this only restores round video to a
+previously-measured value, it doesn't newly measure voice messages.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

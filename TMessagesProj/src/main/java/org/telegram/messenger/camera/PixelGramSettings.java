@@ -217,11 +217,13 @@ public class PixelGramSettings {
     public static final boolean DEFAULT_ECHO_CANCELLATION = true;
     // Round video's own gain, measured directly: the matrix confirmed gain behaves as predicted
     // (2x -> +6.3dB, 3x -> +9.7dB against theoretical +6.0/+9.5) with the soft limiter catching
-    // anything close to clipping, at 5x peaking -7.7dB with no samples near full scale. Since
-    // then, other work (RNNoise, source switch to MIC/DEFAULT) changed how much gain is actually
-    // needed - see FINDINGS.md's speech enhancement section for why this moved down to 1x rather
-    // than staying at the originally-measured 5x.
-    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_1X;
+    // anything close to clipping, at 5x peaking -7.7dB with no samples near full scale. Briefly
+    // moved down to 1x on the theory that RNNoise made the gain stage redundant (RNNoise's SNR
+    // improvement made it look like level wasn't the remaining bottleneck) - reverted back to 3x
+    // once that reasoning was checked: RNNoise removes noise, it doesn't add level, so a low-gain
+    // signal denoised by RNNoise is still a low-gain signal. Gain and denoising address different
+    // problems and neither substitutes for the other.
+    public static final int DEFAULT_MIC_GAIN = MIC_GAIN_3X;
     // Separate from round video's own gain (DEFAULT_MIC_GAIN) - voice messages share the exact
     // same gain+limiter code but were never independently measured. 3x is carried over from round
     // video's own measured behavior (see DEFAULT_MIC_GAIN's comment) on the assumption the same
@@ -242,9 +244,12 @@ public class PixelGramSettings {
     public static final int DEFAULT_SPEECH_ENHANCEMENT_MODE = SPEECH_ENHANCEMENT_RNNOISE;
     // 90% was the initial guess before listening; 70% was the first settled value after A/B'ing
     // the full range (100%/90%/80% all had audible word-ending clipping and full background-
-    // music elimination to varying degrees); further listening moved this to 60%. See
-    // FINDINGS.md's speech enhancement section.
-    public static final float DEFAULT_SPEECH_ENHANCEMENT_WET = 0.6f;
+    // music elimination to varying degrees); further listening moved this down to 60%, then back
+    // up to 80% once 70%-and-below was found to produce an audible stereo-like artefact -
+    // presumably a phase mismatch between the denoised and original signals becoming perceptible
+    // as more of the raw (undenoised) signal is blended back in. See FINDINGS.md's speech
+    // enhancement section.
+    public static final float DEFAULT_SPEECH_ENHANCEMENT_WET = 0.8f;
     public static final int DEFAULT_DOWNSCALE_FILTER = DOWNSCALE_FILTER_LANCZOS;
     // In multiples of 1/255 (one 8-bit LSB), applied as +-0.5x this value. 0 = off. Matches what
     // shipped without a setting (1x = +-0.5 LSB) as the default so existing recordings don't
