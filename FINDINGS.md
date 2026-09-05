@@ -2414,3 +2414,130 @@ than two independently-positioned recordings.
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
 ffprobe -v error -select_streams v -show_entries frame=pts_time -of csv=p=0 <file> | awk 'NR>1{d=$1-p; if(d>0.05) printf "gap %.3fs at t=%.3f\n", d, $1} {p=$1}'
+## Lanczos fix measured: recovers ~40% of the sharpness deficit, doesn't close it (2026-09-05)
+
+Recorded the same four-clip sequence again on the fixed build (dither off,
+1x, 2x, then the iPhone reference), debug logging on this time so the
+on-device marker log could confirm ordering directly rather than trusting
+file timestamps - which turned out to matter: all three PixelGram files
+synced to the device with effectively identical modification timestamps
+(within ~30ms of each other, clearly a batch-sync artefact), useless for
+ordering. Resolved instead by matching each file's own `ffprobe` duration
+against the marker log's `AVDriftProbe` start/stop gaps between the three
+"recording start" lines - the deltas between recordings matched almost
+exactly (log-predicted 0.93s/0.26s gaps between off→1x→2x vs. 0.94s/0.27s
+measured on the actual files), a strong, non-coincidental confirmation of
+which file is which.
+
+**Video, same resolution-normalized method as the pre-fix baseline**
+(PixelGram's 640x640 downscaled to the iPhone's native 400x400 via
+ffmpeg's unbiased `area` filter, then Laplacian-variance):
+
+| | Pre-fix (ratio to iPhone) | Post-fix (ratio to iPhone) | Recovery |
+|---|---|---|---|
+| dither off | 0.326x | 0.461x | +41.3% relative |
+| dither 1x | 0.344x | 0.469x | +36.4% relative |
+| dither 2x | 0.351x | 0.514x | +46.5% relative |
+
+The fix recovered a real, substantial fraction of the deficit - roughly
+40% relative improvement across all three dither levels - but PixelGram
+still measures well below the iPhone's Laplacian variance (0.46-0.51x, not
+1.0x). Some residual gap is expected and not necessarily fixable here: the
+iPhone's own ISP sharpening, sensor/lens differences, and any encoder-side
+detail loss are all outside what a resampling-kernel fix touches. Not
+claiming the remaining gap is fully explained by anything currently
+understood.
+
+**Dither's own contribution, revisited now that tap spacing is fixed**: a
+small, monotonic increase with dither level now shows up (off 0.461x → 1x
+0.469x → 2x 0.514x), which wasn't separable from the tap-spacing confound
+before. But an edge-transition-width probe (10-90% brightness crossing,
+scanned across several rows per frame) - the same method already flagged
+in the pre-fix baseline as noise-vulnerable - reports PixelGram's edges as
+*narrower* than the iPhone's at all three dither levels (2-3px vs 9px),
+which is almost certainly the same noise-spike artefact previously
+distrusted, not genuine sharpening. So dither's contribution is now
+*measurable* as a small effect on the variance metric, but still not
+confirmed as real added detail rather than noise inflating that metric.
+Laplacian variance can't tell the two apart by construction; resolving
+this further would need a metric that isn't fooled by high-frequency noise
+(e.g. detail correlated across multiple frames of the same static scene,
+which genuine noise wouldn't be).
+
+## Second audio sample: bass-heavy characteristic reproduces; root cause narrowed to two candidates (2026-09-05)
+
+Repeated the frequency-response comparison (Welch-method averaged power
+spectrum, active-speech windows only) as an independent second sample,
+same RNNoise-off / Adaptive Gain -15dBFS-target configuration as before:
+
+| Band | Ours (sample 2) | iPhone (sample 2) | Ours (sample 1) | iPhone (sample 1) |
+|---|---|---|---|---|
+| Low (80-300Hz) | 70.8% | 47.7% | 77.7% | 45.8% |
+| Mid (300-2000Hz) | 23.6% | 41.7% | 19.6% | 51.2% |
+| High (2-6kHz) | 0.6% | 7.5% | 0.7% | 1.3% |
+| Very high (6-20kHz) | 0.4% | 0.3% | 0.1% | 1.3% |
+
+**The core characteristic reproduces**: ours is heavily low-frequency-
+weighted relative to the iPhone in both independent samples (70.8-77.7%
+below 300Hz vs. the iPhone's 45.8-47.7%) - this is a real property of the
+capture chain, not a one-off positioning artefact from how either phone
+happened to be held in a single take. **The specific band where the
+high-frequency deficit concentrates did not reproduce exactly**: sample 1
+showed the gap concentrated above 6kHz (13x less than the iPhone there,
+roughly at parity in 2-6kHz); sample 2 shows it concentrated in 2-6kHz
+(12.5x less than the iPhone there) with near-parity above 6kHz. Most
+likely explanation is ordinary speech-content variance between takes
+(different vowels/consonants carry energy at different formant
+frequencies) rather than the effect itself being unstable - the aggregate
+low-vs-mid split is consistent, the fine spectral shape above it isn't.
+
+**Investigated three candidate causes, as requested, before changing
+anything:**
+
+1. **Bandpass engaged despite Voice Isolation being off - ruled out.**
+   Read `VoiceIsolationProcessor.process()`/`processFloat()` directly: both
+   check `PixelGramSettings.getVoiceIsolationMode() == VOICE_ISOLATION_OFF`
+   as their very first statement and return immediately, before touching
+   the buffer at all, before either biquad runs. No filtering of any kind
+   happens on this path when the mode is off. The marker log also directly
+   confirms `voiceIsolation:0` for all three takes. This is airtight, not
+   just probably-fine.
+
+2. **Adaptive Gain's leveler RMS calculation is bass-weighted - ruled out,
+   on mathematical grounds rather than just by inspection.**
+   `AdaptiveGainProcessor`'s RMS is `sqrt(sumSquares/sampleCount)` over raw
+   time-domain samples with no frequency weighting whatsoever, and the one
+   correction it applies (`totalGain`) is a single scalar multiplied onto
+   every sample in the buffer, uniformly, regardless of frequency content.
+   A uniform gain multiply changes overall level but cannot reshape the
+   spectrum - it moves every band up or down by the same number of dB, so
+   the *proportions* between bands (what the 70-78%/46-48% figures above
+   actually measure) are invariant under it by construction. Whatever is
+   producing the bass-heavy shape, it isn't happening in this stage -
+   Adaptive Gain could only make the signal louder or quieter, never more
+   or less bass-weighted.
+
+3. **AudioSource change to MIC/DEFAULT vs. the earlier CAMCORDER default -
+   still an open candidate, not resolved either way.** Round video's
+   `voiceEnhancement:0` ("Off (raw mic)") maps to `AudioSource.DEFAULT`,
+   changed from `CAMCORDER` per this project's own prior SNR measurement
+   (see "Round video's default AudioSource switched to MIC/DEFAULT"
+   above) - but that comparison measured broadband SNR/level in dB only,
+   never frequency response. Whether `CAMCORDER`'s HAL-level tuning
+   (documented by Android only as "tuned for video recording, with the
+   microphone's directional characteristics suitable for recording
+   video," nothing more specific) differs from `DEFAULT`/`MIC` in its
+   frequency shape - rather than just its gain - isn't established by
+   anything already measured in this project, and vendor audio-HAL tuning
+   for named `AudioSource` presets isn't part of the public Camera2/audio
+   framework contract, so it can't be settled by reading code either.
+   Confirming this would need a direct A/B recording - same room, same
+   distance, same take, switching only the `AudioSource` - which hasn't
+   been done. Left open rather than guessed at.
+
+**Net: the bass-heavy characteristic is real and reproducible, and two of
+three candidate mechanisms in this app's own DSP chain are cleanly ruled
+out. The remaining open candidate is upstream of anything this codebase's
+software controls** (the platform's own `AudioSource`-dependent tuning),
+which narrows this considerably even without a definitive answer.
+
