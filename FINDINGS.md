@@ -2620,3 +2620,44 @@ from settings once per buffer rather than from fixed constants, same
 "read live, don't cache" convention the rest of this package already
 follows. Not yet tested against real recordings at non-default values -
 that's the next thing to try once this reaches a device.
+## AudioSource reverted to CAMCORDER: the earlier SNR comparison was blind to spectral shape (2026-09-05)
+
+Reverted `PixelGramSettings.DEFAULT_VOICE_ENHANCEMENT` from `VOICE_ENHANCEMENT_OFF`
+(`AudioSource.DEFAULT`/`MIC`) back to `VOICE_ENHANCEMENT_CAMCORDER`, undoing the
+2026-08-30 switch ("Round video's default AudioSource switched to MIC/DEFAULT"
+above).
+
+**Why the earlier decision was wrong, not just outdated.** That switch was made
+on a single broadband SNR number: MIC/DEFAULT measured ~5.6dB cleaner than
+CAMCORDER. Broadband SNR is dominated by wherever most of a voice signal's
+energy actually sits - the low-mid band, per this session's own frequency-
+response measurements (70-78% of energy below 300Hz) - so a 5.6dB broadband
+advantage is really a claim about *low-frequency* noise, and says nothing
+about the treble end at all. Measured directly this time: CAMCORDER is **8.6dB
+better than MIC/DEFAULT above 6kHz** - the exact band the iPhone comparison
+(see "Second audio sample" above) found this app's output deficient in. Both
+numbers are true simultaneously, and describe different things: MIC/DEFAULT
+is the broadband-quieter source, CAMCORDER is the treble-cleaner one. The
+2026-08-30 switch picked the wrong one because it only had the broadband
+figure to look at.
+
+**The general lesson, worth keeping**: a single broadband ratio (SNR, RMS,
+any single dB number describing "how clean" or "how loud" a whole signal is)
+can be an average over a spectrum that isn't uniform, and can therefore
+completely hide a problem that's concentrated in one band while looking
+fine in aggregate. This project made the same category of mistake once
+already in a different measurement, and now twice with audio specifically.
+Going forward, any audio-source or DSP-stage comparison worth making a
+default decision on should include a frequency-response check (Welch-method
+band split, as used throughout this session's audio work) alongside whatever
+broadband number motivated looking at it in the first place - not as a
+follow-up when something still sounds off, but as part of the original
+comparison.
+
+**Interaction with Adaptive Gain**: unaffected by this change beyond the
+raw signal CAMCORDER hands it - CAMCORDER's extra broadband level (previously
+documented as a "far-talk gain boost") means Adaptive Gain's leveler has less
+distance to cover to reach its target from CAMCORDER's higher starting point
+than it did from MIC/DEFAULT's quieter one, which should make convergence
+even easier on top of the leveler-timing fix below, not a competing factor.
+

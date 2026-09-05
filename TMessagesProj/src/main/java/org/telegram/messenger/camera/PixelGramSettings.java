@@ -239,15 +239,16 @@ public class PixelGramSettings {
     // at each step - at 5x with the soft limiter in place, measured -25.8dB mean, -7.7dB peak,
     // no samples near full scale, so the limiter is only catching occasional transients rather
     // than compressing continuously (see "Mic gain 4x/5x + soft limiter" below).
-    // VOICE_ENHANCEMENT_OFF (AudioSource.DEFAULT, labeled "Off (raw mic)" in the menu) - changed
-    // from CAMCORDER after a proper SNR comparison (real voice, arm's-length geometry) measured
-    // DEFAULT ~5.6dB cleaner than CAMCORDER, despite the original matrix above finding CAMCORDER
-    // ~4.7dB louder. Both are true: CAMCORDER's extra level is a far-talk gain boost that raises
-    // noise right along with signal, not a cleanup - see FINDINGS.md's "Round video's default
-    // AudioSource switched to MIC/DEFAULT" for the full reconciliation. Round video's own gain
-    // stage (mic gain 1x-5x, soft limiter) makes level the cheap, recoverable part and SNR the
-    // scarce one, so the cleaner-but-quieter source is the better starting point.
-    public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_OFF;
+    // VOICE_ENHANCEMENT_CAMCORDER (AudioSource.CAMCORDER) - reverted back from
+    // VOICE_ENHANCEMENT_OFF (2026-09-05) after the broadband SNR comparison that justified the
+    // earlier switch turned out to be measuring the wrong thing: MIC/DEFAULT's ~5.6dB broadband
+    // SNR advantage is a low-frequency-dominated number (most of any voice signal's energy sits
+    // below 2kHz), so it said nothing about the treble end - where CAMCORDER actually measures
+    // ~8.6dB *better* than MIC/DEFAULT, and where the iPhone comparison independently showed this
+    // app's output measurably deficient. See FINDINGS.md's "AudioSource reverted to CAMCORDER"
+    // for the full reconciliation and the general lesson about broadband ratios hiding spectral
+    // shape.
+    public static final int DEFAULT_VOICE_ENHANCEMENT = VOICE_ENHANCEMENT_CAMCORDER;
     public static final boolean DEFAULT_NOISE_SUPPRESSION = true;
     public static final boolean DEFAULT_AGC = false;
     public static final boolean DEFAULT_ECHO_CANCELLATION = true;
