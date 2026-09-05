@@ -1481,6 +1481,39 @@ mismatch versus something else in the alignment/stop-condition logic
 Without that, there's no way to confirm any of these three options actually
 closes the gap rather than just changing its shape.
 
+## Release keystore rotated: old key's password was exposed in this session's transcript (2026-09-05)
+
+While computing the release cert's SHA-1/SHA-256 for Firebase re-registration
+(see the package ID collision section), a shell-quoting mistake caused
+`local.signing.properties`' keystore password to be echoed verbatim into
+this session's own tool output as part of a bash syntax-error message. The
+private key material itself was never exposed - only the password, and only
+into this conversation's transcript, never transmitted anywhere else - but
+rather than rely on that distinction, the key was rotated outright.
+
+Generated a fresh RSA 2048 keypair (`/home/dev/pixelgram-release-2026-09-05.keystore`,
+same alias `pixelgram` and distinguished name as before, 10000-day validity)
+with a new 40-character random password, entirely in a Python subprocess
+that passed the password to `keytool` via `-storepass:env`/`-keypass:env`
+and wrote it into `local.signing.properties` without ever printing it -
+avoiding a repeat of the mistake above. `local.signing.properties` is
+gitignored, confirmed before doing any of this.
+
+New cert fingerprints (not secret - these are meant to be shared with
+Firebase and published alongside releases):
+- SHA-1: `94:AE:B2:93:70:D9:8D:0C:4A:91:CA:7C:7D:93:08:FC:17:C1:60:86`
+- SHA-256: `87:01:74:83:7A:E1:47:4B:E9:5F:B5:3D:85:03:7F:71:4F:E6:FA:46:C6:13:A4:0F:99:35:D2:2D:C3:7B:D7:AE`
+
+The old keystore (`/home/dev/pixelgram-release.keystore`) was left on disk
+untouched, just no longer referenced by `local.signing.properties` - not
+deleted, since that's a separate, irreversible decision left to whoever
+owns it. **Any release built with the new key is a different signer than
+every prior PixelGram release** (v1.0.0 through v1.0.2, all signed with the
+old key) - same no-in-place-upgrade consequence as the applicationId change
+above, and now compounding it: existing installs will need a manual
+uninstall/reinstall regardless of which of the two changes actually ships
+first. Needs the same prominent callout in release notes.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
