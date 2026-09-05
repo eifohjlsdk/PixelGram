@@ -112,6 +112,7 @@ public class PixelGramSettings {
     private static final String KEY_TONEMAP_MODE = "tonemap_mode";
     private static final String KEY_FACE_AE_METERING = "face_ae_metering";
     private static final String KEY_LOW_LIGHT_BOOST = "low_light_boost_enabled";
+    private static final String KEY_PREVIEW_STABILIZATION = "preview_stabilization_enabled";
     private static final String KEY_EXPOSURE_COMPENSATION = "exposure_compensation_ev";
     private static final String KEY_RESOLUTION = "resolution";
     private static final String KEY_VIDEO_BITRATE = "video_bitrate";
@@ -160,6 +161,17 @@ public class PixelGramSettings {
      * for a talking head, so this stays off by default - offered as a setting (with that tradeoff
      * stated in the UI) for whoever prefers brightness over motion smoothness. */
     public static final boolean DEFAULT_LOW_LIGHT_BOOST = false;
+
+    /** CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION (2) - confirmed available on both
+     * cameras, with SCALER_MANDATORY_PREVIEW_STABILIZATION_OUTPUT_STREAM_COMBINATIONS also
+     * populated on both (genuine HAL backing, not just an advertised enum value). Basic
+     * stabilization (CONTROL_VIDEO_STABILIZATION_MODE_ON, mode 1) is already unconditionally
+     * applied whenever supported, independent of this setting - preview stabilization is a
+     * stronger guarantee (preview and recorded video see the same stabilized/cropped stream) at
+     * the cost of a real crop, on top of the crop this app's own supersample-to-circle pipeline
+     * already applies. Off by default until the actual compounded crop is measured - see
+     * FINDINGS.md's Preview Stabilization section. */
+    public static final boolean DEFAULT_PREVIEW_STABILIZATION = false;
     public static final float DEFAULT_EXPOSURE_COMPENSATION = 0.0f;
     // Set from A/B testing across the full resolution range (see FINDINGS.md): resolution
     // mattered more than bitrate, and Lanczos looked clearly better than Box/Gaussian. 640 is
@@ -310,6 +322,14 @@ public class PixelGramSettings {
 
     public static void setLowLightBoostEnabled(boolean enabled) {
         prefs().edit().putBoolean(KEY_LOW_LIGHT_BOOST, enabled).apply();
+    }
+
+    public static boolean isPreviewStabilizationEnabled() {
+        return prefs().getBoolean(KEY_PREVIEW_STABILIZATION, DEFAULT_PREVIEW_STABILIZATION);
+    }
+
+    public static void setPreviewStabilizationEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_PREVIEW_STABILIZATION, enabled).apply();
     }
 
     public static float getExposureCompensationEv() {
@@ -737,6 +757,7 @@ public class PixelGramSettings {
                 .putInt(KEY_TONEMAP_MODE, DEFAULT_TONEMAP_MODE)
                 .putBoolean(KEY_FACE_AE_METERING, DEFAULT_FACE_AE_METERING)
                 .putBoolean(KEY_LOW_LIGHT_BOOST, DEFAULT_LOW_LIGHT_BOOST)
+                .putBoolean(KEY_PREVIEW_STABILIZATION, DEFAULT_PREVIEW_STABILIZATION)
                 .putFloat(KEY_EXPOSURE_COMPENSATION, DEFAULT_EXPOSURE_COMPENSATION)
                 .putInt(KEY_RESOLUTION, DEFAULT_RESOLUTION)
                 .putInt(KEY_VIDEO_BITRATE, DEFAULT_VIDEO_BITRATE)

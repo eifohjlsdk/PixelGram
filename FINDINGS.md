@@ -1929,6 +1929,34 @@ The debug-only "LLB Test FPS Range" selector (`PixelGramSettings.KEY_LLB_TEST_FP
 measurement is done - it was always scoped as temporary investigation
 scaffolding, not a shipped feature.
 
+## Preview Stabilization implemented as a setting, default off; crop not yet measured (2026-09-05)
+
+Implements the plan reported earlier - `CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION`
+(2) confirmed available on both cameras (`CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES`
+includes it, and `SCALER_MANDATORY_PREVIEW_STABILIZATION_OUTPUT_STREAM_COMBINATIONS`
+is populated on both - genuine HAL backing, not just an advertised enum
+value).
+
+`PixelGramSettings.isPreviewStabilizationEnabled()`/`setPreviewStabilizationEnabled()`,
+default off. Wired into `Camera2Session.updateCaptureRequest()`: when on and
+`previewStabilizationSupported`, sets `CONTROL_VIDEO_STABILIZATION_MODE` to
+`PREVIEW_STABILIZATION` (2) - **superseding**, not adding to, the existing
+always-on basic stabilization (mode `ON`, 1), since both share the same
+capture-request key and only one value can be set. When the setting is off,
+falls back to exactly the existing behavior (mode `ON` whenever supported,
+unchanged from before this setting existed). Settings row gated on both
+cameras supporting it, same caching-once-in-`buildRows()` pattern as Low
+Light Boost.
+
+**Crop not yet measured.** No static characteristic exposes the exact
+percentage - Android's own docs describe "up to 20%" as a general FOV-
+reduction guideline, device/HAL-specific in practice. Waiting on two
+recordings (same well-lit static scene, setting on vs. off) to compare
+actual content bounds and report the real number, including how it
+compounds with this app's own existing supersample-to-circle crop.
+
+Verified via `:TMessagesProj_App:compileAfatDebugJavaWithJavac`.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

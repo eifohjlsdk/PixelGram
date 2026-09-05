@@ -64,6 +64,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     // CameraCharacteristics query (Camera2Session.queryLowLightBoostSupported), same reasoning
     // as PixelGramSettings' own mic-preference-probe caching.
     private boolean lowLightBoostAvailable;
+    private boolean previewStabilizationAvailable;
 
     private int headerCredentialsRow;
     private int apiCredentialsRow;
@@ -83,6 +84,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int faceAeMeteringRow;
     private int lowLightBoostRow;
     private int lowLightBoostInfoRow;
+    private int previewStabilizationRow;
     private int exposureCompensationRow;
     private int downscaleFilterRow;
     private int ditherAmountRow;
@@ -160,6 +162,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
         lowLightBoostAvailable = Camera2Session.queryLowLightBoostSupported(true) && Camera2Session.queryLowLightBoostSupported(false);
         lowLightBoostRow = rowCount++;
         lowLightBoostInfoRow = rowCount++;
+        previewStabilizationAvailable = Camera2Session.queryPreviewStabilizationSupported(true) && Camera2Session.queryPreviewStabilizationSupported(false);
+        previewStabilizationRow = rowCount++;
         exposureCompensationRow = rowCount++;
         downscaleFilterRow = rowCount++;
         ditherAmountRow = rowCount++;
@@ -241,6 +245,11 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 if (lowLightBoostAvailable) {
                     PixelGramSettings.setLowLightBoostEnabled(!PixelGramSettings.isLowLightBoostEnabled());
                     ((TextCheckCell) view).setChecked(PixelGramSettings.isLowLightBoostEnabled());
+                }
+            } else if (position == previewStabilizationRow) {
+                if (previewStabilizationAvailable) {
+                    PixelGramSettings.setPreviewStabilizationEnabled(!PixelGramSettings.isPreviewStabilizationEnabled());
+                    ((TextCheckCell) view).setChecked(PixelGramSettings.isPreviewStabilizationEnabled());
                 }
             } else if (position == exposureCompensationRow) {
                 showExposureCompensationDialog();
@@ -860,6 +869,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || pos == debugLoggingRow
                     || pos == noiseReductionRow || pos == edgeModeRow || pos == tonemapModeRow || pos == faceAeMeteringRow || pos == exposureCompensationRow
                     || (pos == lowLightBoostRow && lowLightBoostAvailable)
+                    || (pos == previewStabilizationRow && previewStabilizationAvailable)
                     || pos == downscaleFilterRow || pos == ditherAmountRow
                     || pos == voiceEnhancementRow
                     || (pos == noiseSuppressionRow && NoiseSuppressor.isAvailable())
@@ -997,6 +1007,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     } else if (position == lowLightBoostRow) {
                         cell.setTextAndCheck("Low Light Boost" + (lowLightBoostAvailable ? "" : " (unavailable)"), PixelGramSettings.isLowLightBoostEnabled(), true);
                         cell.setAlpha(lowLightBoostAvailable ? 1f : DISABLED_ROW_ALPHA);
+                    } else if (position == previewStabilizationRow) {
+                        cell.setTextAndCheck("Preview Stabilization" + (previewStabilizationAvailable ? "" : " (unavailable)"), PixelGramSettings.isPreviewStabilizationEnabled(), true);
+                        cell.setAlpha(previewStabilizationAvailable ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == noiseSuppressionRow) {
                         boolean available = NoiseSuppressor.isAvailable();
                         cell.setTextAndCheck("Noise Suppression" + (available ? "" : " (unavailable)"), PixelGramSettings.isNoiseSuppressionEnabled(), true);
@@ -1037,7 +1050,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 return TYPE_SHADOW;
             } else if (position == headerCredentialsRow || position == headerRecordingRow || position == headerQualityRow || position == headerAudioRow || position == headerUpdatesRow) {
                 return TYPE_HEADER;
-            } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == lowLightBoostRow
+            } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == lowLightBoostRow || position == previewStabilizationRow
                     || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow) {
                 return TYPE_CHECK;
             } else if (position == updateInfoRow || position == lowLightBoostInfoRow) {

@@ -82,6 +82,7 @@ public class Camera2Session {
     private boolean videoStabilizationSupported;
     private boolean opticalStabilizationSupported;
     private boolean lowLightBoostSupported;
+    private boolean previewStabilizationSupported;
     private boolean faceDetectFullSupported;
     private int[] availableNoiseReductionModes = new int[0];
     private int[] availableEdgeModes = new int[0];
@@ -235,6 +236,7 @@ public class Camera2Session {
             targetFpsRange = pickTargetFpsRange(cameraCharacteristics, cameraId, isFront);
             afContinuousVideoSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO, "CONTROL_AF_MODE_CONTINUOUS_VIDEO");
             videoStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON, "CONTROL_VIDEO_STABILIZATION_MODE_ON");
+            previewStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION, "CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION");
             opticalStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON, "LENS_OPTICAL_STABILIZATION_MODE_ON");
             lowLightBoostSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES, CameraMetadata.CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY, "CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY");
             faceDetectFullSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES, CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL, "STATISTICS_FACE_DETECT_MODE_FULL");
@@ -460,6 +462,12 @@ public class Camera2Session {
         CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
         if (characteristics == null) return false;
         return supportsMode(characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES), CameraMetadata.CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY);
+    }
+
+    public static boolean queryPreviewStabilizationSupported(boolean front) {
+        CameraCharacteristics characteristics = queryCharacteristicsForFacing(front);
+        if (characteristics == null) return false;
+        return supportsMode(characteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES), CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION);
     }
 
     // Called on the tg_camera2 handler thread for every completed capture while a
@@ -898,7 +906,18 @@ public class Camera2Session {
                     }
                 }
 
-                if (videoStabilizationSupported) {
+                // Preview Stabilization (opt-in, off by default - see FINDINGS.md's Preview
+                // Stabilization section for the measured crop) supersedes basic stabilization
+                // when enabled and supported - same capture-request key, only one value can be
+                // set. Otherwise falls back to the existing always-on basic stabilization,
+                // unchanged from before this setting existed.
+                if (previewStabilizationSupported && PixelGramSettings.isPreviewStabilizationEnabled()) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": CONTROL_VIDEO_STABILIZATION_MODE (preview stabilization) set failed", e);
+                    }
+                } else if (videoStabilizationSupported) {
                     try {
                         captureRequestBuilder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON);
                     } catch (Exception e) {
