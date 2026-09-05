@@ -2080,6 +2080,25 @@ established limiter/leveler design conventions and this app's own existing
 -3dBFS soft-limiter headroom), not something verified against a real
 recording yet. Ships off by default per the standing convention.
 
+## Early impression: Adaptive Gain alone may beat RNNoise+Adaptive Gain in a quiet room (2026-09-05, unconfirmed)
+
+Informal observation, not a controlled measurement: with RNNoise turned off and
+Adaptive Gain on, the result subjectively sounded as good as or better than
+with RNNoise also active. Plausible explanation - they solve different
+problems (Adaptive Gain evens out overall speech *level*, RNNoise removes
+*background noise*), so in a quiet room where there's little background
+noise to remove, RNNoise has nothing to earn its keep against, and whatever
+artefacts it does introduce (the per-chunk splice bug already found and
+fixed, or more subtly the wet/dry blend's own audible tradeoffs already
+documented in the RNNoise section above) may show up as a net negative with
+no offsetting benefit.
+
+**Not a conclusion - needs testing in an actual noisy environment**, where
+RNNoise would have real background noise to remove and its benefit could
+actually outweigh whatever it costs. A quiet-room comparison alone can't
+distinguish "RNNoise isn't helping here" from "RNNoise never helps enough to
+be worth it" - only a noisy-room test can.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
