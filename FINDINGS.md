@@ -1390,6 +1390,97 @@ alignment/stop-condition logic" needs an instrumented recording (logging
 both raw timestamp sources per frame across a full 60s clip) that wasn't
 part of this investigation.
 
+## A/V drift fix options (investigated, none implemented) (2026-09-05)
+
+Requested: report what fixing the clock-domain mismatch above would
+actually involve, before touching any code. Three options, in the order
+asked.
+
+**Option A - request a matching timestamp source.** `AudioRecord.getTimestamp()`
+takes a `timebase` argument alongside `TIMEBASE_MONOTONIC`:
+`AudioTimestamp.TIMEBASE_BOOTTIME` (both added together in API 24), which is
+documented as the same domain as `SystemClock.elapsedRealtimeNanos()` -
+exactly the domain this device's camera sensor timestamps are already
+confirmed to use. On this device, switching `handleAudioFrameAvailable`'s
+call from `TIMEBASE_MONOTONIC` to `TIMEBASE_BOOTTIME` would put both tracks
+in the same clock domain with essentially a one-constant change.
+
+The catch: this only works because `SENSOR_INFO_TIMESTAMP_SOURCE` happens to
+be `REALTIME` *on this device*. Camera2's other legal value,
+`TIMESTAMP_SOURCE_UNKNOWN`, is documented as "may not have any relation to
+the timestamps for a later frame... may not be comparable across different
+instances of the same or different camera devices" - i.e. some devices
+expose a sensor clock with no defined relationship to *any* queryable system
+clock, so there's nothing to request a match against. Any implementation
+would need to read `SENSOR_INFO_TIMESTAMP_SOURCE` at camera-open time (cheap
+- it's already read for other characteristics) and only take this path when
+it's `REALTIME`, falling back to something else otherwise.
+
+**Option B - convert between the clocks.** Rather than trust a hardware
+timebase choice, sample both clocks back-to-back once
+(`SystemClock.elapsedRealtimeNanos()` and `System.nanoTime()`) at a known
+instant and apply the resulting fixed delta when comparing an audio
+timestamp against a video one. This is a cleaner version of what the code
+already sort of does with `desyncTime` - except today's offset is inferred
+from *content arrival* (the first audio buffer whose timestamp lands near
+the first video frame's, subject to camera warm-up and buffer-queueing
+jitter), where a direct dual-clock read is a clean, jitter-free measurement
+of the same thing. Same applicability caveat as Option A: only meaningful
+when the sensor's clock is actually `REALTIME` - on an `UNKNOWN`-source
+device there is no fixed delta to compute, because there's no defined
+relationship to compute it from.
+
+Both A and B are, at best, a **better origin correction** - even implemented
+perfectly, neither corrects for the two clocks *ticking* at different rates
+over a 60-second recording, only for where they start. Given the measured
+gap (0.43s/~60s, roughly 0.7% - large for plain crystal-oscillator drift
+between two clock domains on one SoC), rate mismatch look like a real
+possibility, and neither A nor B addresses it.
+
+**Option C - derive audio timestamps from cumulative sample count against
+the video clock.** Anchor audio to video's clock exactly once (same
+cross-domain touch point as today's `desyncTime`), then compute every
+subsequent audio timestamp as `audioStartTimeInVideoClock + cumulativeSamplesRead
+* 1_000_000 / sampleRate` instead of continuing to read
+`AudioRecord.getTimestamp()` (or `System.nanoTime()`) per buffer. This
+stops relying on a second hardware clock's *rate* at all after the initial
+anchor - elapsed time becomes pure arithmetic on a sample counter this code
+already has (`buffer.read[a]`), rather than two independently-ticking
+clocks that are each assumed, not verified, to advance at the same rate.
+This is also the only one of the three options that doesn't depend on
+`SENSOR_INFO_TIMESTAMP_SOURCE` being `REALTIME` - it works identically on
+an `UNKNOWN`-source device, since after the one-time anchor it never
+compares against the camera's clock again.
+
+The tradeoff: this assumes the audio hardware's *actual* delivered sample
+rate matches the *declared* `audioSampleRate` closely (true to within tens
+of ppm on real consumer audio hardware - sub-millisecond drift over 60s,
+negligible next to the observed 430ms) - and it discards whatever
+buffering-latency compensation `AudioRecord.getTimestamp()` is specifically
+designed to provide (it maps DMA frame position to wall-clock time,
+accounting for the audio pipeline's own internal buffering delay - a plain
+sample counter doesn't know about that delay and would be counting from
+when a sample was *read* by the app, not when it was *captured* by the
+mic). That's a real, if probably small, precision cost in exchange for
+removing the cross-domain rate-mismatch risk entirely.
+
+**Recommendation, not yet implemented**: Option C as the primary fix - it's
+portable across both `SENSOR_INFO_TIMESTAMP_SOURCE` values and directly
+addresses the "origin-only, no rate correction" gap identified in the
+mechanism report above, rather than making the existing origin correction
+merely more precise. Option A/B's `TIMEBASE_BOOTTIME` switch is worth adding
+*in addition*, gated on a `REALTIME` check, as a better-quality anchor point
+for Option C's one-time synchronization - not as a replacement for it.
+
+**What's still missing before implementing any of this**: an instrumented
+recording that logs both the raw `AudioRecord.getTimestamp()` value and the
+raw `SurfaceTexture` sensor timestamp per frame/buffer across a full 60s
+clip, to directly quantify how much of the 0.43s is clock-domain rate
+mismatch versus something else in the alignment/stop-condition logic
+(flagged as an open question in the mechanism report above, still open).
+Without that, there's no way to confirm any of these three options actually
+closes the gap rather than just changing its shape.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
