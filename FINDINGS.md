@@ -1776,6 +1776,18 @@ thresholds (audio-trailing-video becomes noticeable to some viewers
 starting around 45-125ms) that it's not obviously below the threshold of
 mattering, unlike the ~20ms floor component alone would be.
 
+**Decision: stop here.** 0.13s is roughly four video frames (33.3ms each)
+as a fixed per-recording offset, not a rate that accumulates with
+recording length the way the pre-fix bug did (that one grew however far
+audio's backlog had built up by the time video stopped - not bounded by
+anything). Started this investigation at 1.4-3.0s free-running, then 0.43s
+after the AE-fps-range fix, now 0.13s after the unit-mismatch fix - each
+step fixed a real, identified mechanism, and 0.13s fixed is a reasonable
+place to stop chasing further. **The pipeline-latency-asymmetry theory
+above is left as the leading unconfirmed explanation, recorded with what
+would be needed to test it, for anyone who wants to pick it up later** -
+not pursued further in this pass.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
