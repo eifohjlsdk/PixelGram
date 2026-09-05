@@ -1625,6 +1625,47 @@ the actual `AVDriftProbe` log line from a re-record on the corrected build
 to see the buggy-vs-corrected comparison and the backlog buffer count
 directly, rather than infer it from durations alone.
 
+## Second upstream bug fixed: audio-stop unit mismatch (2026-09-05)
+
+Confirmed directly via the `AVDriftProbe` stop-condition log on a real
+recording: `buggyCheck=false` and `correctedCheck=true` at the exact same
+instant, with `videoLastNs` and `videoLastUs` exactly 1000x apart - both the
+mechanism and the effect size predicted above, now shown on real data rather
+than inferred. `handleAudioFrameAvailable`'s stop condition genuinely never
+fires the "audio caught up to video's last frame" branch; every recording
+stops audio via the 60s hard cap instead, flushing whatever backlog is
+queued regardless of when video's last frame actually landed - matching the
+0.31s tail measured on a 30s test clip (905 frames at exactly 30.0fps, so
+the frame rate itself was never the issue).
+
+**Fixed**: `handleAudioFrameAvailable` now converts `videoLast` (nanoseconds)
+to microseconds once, into a local `videoLastUs`, before comparing against
+the microsecond-domain `input.offset[]`/`desyncTime` - both at the stop
+condition itself and in the diagnostic log message beside it. Removed the
+one-shot `AVDriftProbe` diagnostic at the comparison site (its job - showing
+the buggy vs. corrected result side by side - is done now that there's only
+one, corrected result); left the dual-clock start/stop samples and the
+audio-backlog-size log in place, since those still matter for confirming
+whether any residual gap remains after this fix, and if so how much of it
+is clock-domain rate mismatch (see the "A/V drift fix options" section)
+versus something still unaccounted for.
+
+**This is stock upstream Telegram-Android's bug, not this fork's** -
+confirmed via `git blame` back to `d073b80063` (DrKLO, 2018-07-30), unfixed
+in seven years, and affects every Telegram-Android build, not just PixelGram
+- round video's trailing audio has apparently been silently longer than its
+video track industry-wide since 2018. This is the second stock-upstream
+defect this fork has found and fixed, alongside the `CONTROL_AE_TARGET_FPS_RANGE`
+issue documented near the top of this file (upstream hardcodes `[30,60]`
+unconditionally rather than picking from the sensor's actual supported
+ranges, silently free-running the ISP at half the intended bits-per-frame
+on hardware that doesn't support that exact range) - worth reporting
+upstream on its own merits, independent of anything else in this fork.
+
+**Not yet re-measured**: the fix is applied and compiles, but the next
+recording (to confirm whether track durations actually converge, and
+whether any residual gap remains) hasn't been done yet.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

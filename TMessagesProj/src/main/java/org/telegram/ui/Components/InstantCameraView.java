@@ -2350,9 +2350,6 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         private long videoDiff;
         private long prevVideoLast = -1;
         private long audioFirst = -1;
-        // TEMPORARY A/V drift investigation instrumentation - see FINDINGS.md. Remove together
-        // with the AVDriftProbe log lines once the drift is fixed and re-measured.
-        private boolean avDriftProbeLogged;
         private long audioLast = -1;
         private long audioLastDt = 0;
         private long prevAudioLast = -1;
@@ -2775,29 +2772,25 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         for (int a = input.lastWroteBuffer; a <= input.results; a++) {
                             if (a < input.results) {
                                 long totalTime = input.offset[a] - audioStartTime;
-                                // TEMPORARY A/V drift investigation instrumentation - see
-                                // FINDINGS.md's "A/V drift" sections. videoLast is stored in
-                                // nanoseconds (see the frameAvailable() assignment) but
-                                // input.offset[]/desyncTime are microseconds (audioTimestamp.nanoTime
-                                // / 1000) - the comparison below mixes units by a factor of 1000.
-                                // Logs the raw values once per recording so real data can confirm
-                                // whether the corrected (unit-consistent) comparison would have
-                                // evaluated differently than what's actually running today.
-                                if (!running && !avDriftProbeLogged) {
-                                    avDriftProbeLogged = true;
-                                    long videoLastUs = videoLast / 1000;
-                                    PixelCameraLog.d("AVDriftProbe stopCondition: audioOffsetUs=" + input.offset[a]
-                                            + " videoLastNs=" + videoLast + " videoLastUs=" + videoLastUs
-                                            + " desyncTimeUs=" + desyncTime + " totalTimeUs=" + totalTime
-                                            + " buggyCheck(offset>=videoLastNs-desync)=" + (input.offset[a] >= videoLast - desyncTime)
-                                            + " correctedCheck(offset>=videoLastUs-desync)=" + (input.offset[a] >= videoLastUs - desyncTime));
-                                }
-                                if (!running && (input.offset[a] >= videoLast - desyncTime || totalTime >= 60_000000)) {
+                                // videoLast is stored in nanoseconds (see the frameAvailable()
+                                // assignment) but input.offset[]/desyncTime are microseconds
+                                // (audioTimestamp.nanoTime / 1000) - convert before comparing.
+                                // Confirmed via AVDriftProbe logging (FINDINGS.md's "A/V drift"
+                                // sections) that comparing raw videoLast against these µs values
+                                // made this branch never fire in practice: videoLast is ~1000x
+                                // the magnitude of a comparable µs value for any realistic device
+                                // uptime, so "stop audio once it catches up to where video
+                                // actually stopped" was silently dead code - audio always ran to
+                                // the 60s hard cap instead, flushing whatever backlog was queued
+                                // regardless of when video's last frame actually landed. Stock
+                                // upstream bug, present since 2018 (d073b80063) - see FINDINGS.md.
+                                long videoLastUs = videoLast / 1000;
+                                if (!running && (input.offset[a] >= videoLastUs - desyncTime || totalTime >= 60_000000)) {
                                     if (BuildVars.LOGS_ENABLED) {
                                         if (totalTime >= 60_000000) {
                                             FileLog.d("InstantCamera stop audio encoding because recorded time more than 60s");
                                         } else {
-                                            FileLog.d("InstantCamera stop audio encoding because of stoped video recording at " + input.offset[a] + " last video " + videoLast);
+                                            FileLog.d("InstantCamera stop audio encoding because of stoped video recording at " + input.offset[a] + " last video " + videoLastUs);
                                         }
 
                                     }
@@ -3707,7 +3700,6 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 audioFirst = -1;
                 videoFirst = -1;
                 videoLast = -1;
-                avDriftProbeLogged = false;
                 videoDiff = -1;
                 audioLast = -1;
                 audioDiff = -1;
