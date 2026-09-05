@@ -112,9 +112,10 @@ and it needs your own Telegram API credentials:
    clear app data. You can view or change them later from Settings →
    PixelGram Camera → API Credentials.
 
-PixelGram uses a distinct application ID from the Play Store Telegram app, so
-it installs and runs side by side with it - it will not replace or conflict
-with your existing Telegram install.
+PixelGram uses a distinct application ID (`com.pixelgram.messenger.web`) from
+both the Play Store Telegram app and telegram.org's own direct-download APK,
+so it installs and runs side by side with either - it will not replace or
+conflict with your existing Telegram install.
 
 The app includes a built-in update checker (Settings → PixelGram Camera →
 Updates) that periodically checks this repository's releases and can also be

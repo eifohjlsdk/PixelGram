@@ -1081,6 +1081,77 @@ the easy case for a denoiser; flagged rather than assumed to generalize.
   is controlled by Firebase Security Rules/App Check, and this key is
   already restricted to this app's package name and signing certificate.
 
+## Package ID collision with telegram.org's direct-download APK (2026-09-05)
+
+The release build's applicationId (`APP_PACKAGE` + the `.web`
+`applicationIdSuffix` both `standalone` and `release` already carried) was
+`org.telegram.messenger.web` through v1.0.2 - the stock upstream default,
+unchanged by this fork. telegram.org's own direct-download build (this same
+open-source tree, built unmodified) ships under that exact same ID. Android
+refuses to install two packages with the same applicationId signed by
+different certificates, so a device with that build installed could not
+install PixelGram, and vice versa - the README's "runs side by side" claim
+was only actually true against the *Play Store* Telegram (which is a
+different ID, `org.telegram.messenger`, no suffix), not the direct-download
+one.
+
+**Fixed**: `APP_PACKAGE` in `gradle.properties` changed from
+`org.telegram.messenger` to `com.pixelgram.messenger`, giving final IDs
+`com.pixelgram.messenger.beta` (debug), `.web` (standalone/release) -
+distinct from every stock Telegram build. README updated to name the actual
+ID and both potential collisions. Verified via
+`aapt dump badging` that a debug build now reports the new ID.
+
+**What else this touches:**
+
+- **Firebase - blocks the build, confirmed by actually running it.**
+  `google-services.json`'s client entries are keyed to the exact old package
+  names; the `google-services` Gradle plugin checks this at build time, not
+  just at runtime. Ran `:TMessagesProj_App:processAfatDebugGoogleServices`
+  after the rename and got exactly the expected failure, immediately and
+  clearly (matching this project's existing "fail loud, not silently" style
+  for the signing-config check in the same build file):
+  `No matching client found for package name 'com.pixelgram.messenger.beta'`.
+  This is real Firebase project configuration (project `pixelgram-4274c` for
+  release, per `TMessagesProj_App/src/release/google-services.json`) that
+  only the account holder can update - I did not edit the package names
+  inside these JSON files, since doing so would produce a config that builds
+  but can't actually authenticate to Firebase (the backend checks the
+  package name/cert against what's registered, not just the JSON file
+  content). **Action needed before the next build**: in the Firebase console
+  for the `pixelgram-4274c` project (and the shared `tmessages2` debug
+  project, or a project of your own for debug), add an Android app for each
+  new applicationId (`com.pixelgram.messenger`, `.beta`, `.web`) with the
+  release signing cert's SHA-1/SHA-256, then download the resulting
+  `google-services.json` over each of
+  `TMessagesProj_App/src/{release,debug,standalone}/google-services.json`
+  (and `TMessagesProj/google-services.json`, `TMessagesProj_AppStandalone/`,
+  `TMessagesProj_AppHockeyApp/`, `TMessagesProj_AppHuawei/`, which mirror the
+  same client list).
+- **Update checker**: no code change needed - `PixelGramUpdateChecker.java`
+  only calls the GitHub releases API and never references the applicationId
+  or an installed-package check.
+- **Existing installs - no in-place upgrade, and local data is not
+  migrated.** A different applicationId is a different app to Android; the
+  next release APK will not be recognized as an update to anyone's existing
+  `org.telegram.messenger.web`/`.beta` install. Anyone updating must
+  manually uninstall the old one and install the new one, losing local
+  PixelGram settings and cached media (the Telegram account itself is
+  server-side, so login is unaffected - just re-login after reinstalling).
+  This needs a prominent callout in whichever release notes ship this
+  change, not just a changelog line.
+- **Not asked, but adjacent - not touched**: `ContactsController.java` and
+  the account-authenticator manifest entries register an Android
+  `AccountManager` account type of the hardcoded string
+  `"org.telegram.messenger"`, independent of applicationId. This was already
+  true before this change and isn't unique to it, but is worth knowing: if a
+  real Telegram build and this fork are both installed on the same device,
+  they register the *same* account type string with `AccountManager`/
+  `ContactsContract`, which Android allows (it's not required to be globally
+  unique the way a `ContentProvider` authority is) but can produce surprising
+  account-picker/sync behavior between the two apps. Left alone since it's
+  outside what was asked and isn't a regression introduced by this change.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
