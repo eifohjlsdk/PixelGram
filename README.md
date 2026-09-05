@@ -105,8 +105,20 @@ and it needs your own Telegram API credentials:
    outside the Play Store** - this is expected for any sideloaded APK, not
    specific to PixelGram, and there's no way around it without Play Store
    distribution.
-4. Open the downloaded APK and install it.
-5. On first launch, PixelGram will ask for the `api_id`/`api_hash` from step
+4. **Verify the download** before installing, by checking it against the
+   SHA-256 hash and signing certificate fingerprint published in that
+   release's notes on the Releases page:
+   ```
+   sha256sum PixelGram-<version>.apk
+   apksigner verify --print-certs PixelGram-<version>.apk   # look for the same cert fingerprint
+   ```
+   This confirms the file you downloaded is exactly what was published and
+   signed with PixelGram's own key - not a tampered copy from a mirror or a
+   compromised download path. The in-app update checker only ever links you
+   to this same Releases page; it never downloads or installs anything on
+   its own.
+5. Open the downloaded APK and install it.
+6. On first launch, PixelGram will ask for the `api_id`/`api_hash` from step
    1 before showing the normal login screen. Enter them once - they're
    stored locally on your device and you won't be asked again unless you
    clear app data. You can view or change them later from Settings →

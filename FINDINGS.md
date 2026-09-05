@@ -1249,6 +1249,38 @@ an actual overshoot recording on-device; the arithmetic was checked by hand
 consistent with 2Mbps having been the confirmed-reclassified data point) but
 the live ratchet path specifically has not been exercised end-to-end.
 
+## Update checker integrity (2026-09-05)
+
+`PixelGramUpdateChecker` never downloaded or installed anything itself - it
+only opens a bulletin linking to the GitHub release page, and the user does
+the actual download/install as a normal manual sideload. Confirmed that by
+reading the whole class; worth stating explicitly in its class doc now,
+since that design choice is the main reason this is lower-risk than an
+update checker that can silently fetch-and-install.
+
+What it didn't do: pin the host it connects to (the URL was a hardcoded
+string, but never checked against what was actually being connected to,
+and redirects were left to the platform default rather than disabled), or
+validate the API response's `html_url` before handing it to
+`Browser.openUrl()` - if the GitHub account or the connection were ever
+compromised, that field could point anywhere and would have been opened
+without question. Fixed: `fetchLatestRelease()` now checks the resolved
+request host against a pinned constant before connecting and disables
+automatic redirect-following; a new `safeAssetUrl()` validates the
+`html_url` is `https://github.com` (or a subdomain) before use, falling back
+to the hardcoded releases page for anything else, and logging what was
+discarded.
+
+**Publishing verification info** (the "verify a published SHA-256" ask):
+there's no APK download inside the app to verify against, so this is a
+release-process/documentation change rather than a code one. Added a
+"Verify the download" step to the README's install instructions covering
+`sha256sum` and `apksigner verify --print-certs`, and going forward every
+release's notes need to publish the APK's SHA-256 and signing certificate
+fingerprint (both already computed as part of this fork's own release
+process - see the "Release 1.0.2 to publish" workflow - just not previously
+written down anywhere a sideloader could check them against).
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

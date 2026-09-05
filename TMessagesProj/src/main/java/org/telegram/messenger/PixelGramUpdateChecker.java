@@ -24,12 +24,24 @@ import java.nio.charset.StandardCharsets;
  * Telegram's own update mechanism (SharedConfig.pendingAppUpdate), which is Telegram-server-based
  * and standalone-build-only. Throttled to once per 30 days and unmetered connections only for
  * the automatic (non-manual) check; the settings screen's "Check now" bypasses both.
+ *
+ * This class never downloads or installs an APK itself - it only shows a bulletin linking the
+ * user to the GitHub release page, where they download and install manually like any other
+ * sideload. Keep it that way: an update checker that can silently fetch-and-install is a much
+ * larger trust surface (a compromised GitHub account or a MITM'd connection could push
+ * arbitrary code) than one that always hands the human a page to look at first. See FINDINGS.md's
+ * "Update checker integrity" section.
  */
 public class PixelGramUpdateChecker {
 
     // Single constant, easy to point at a different fork/repo later.
     public static final String REPO_URL = "https://github.com/eifohjlsdk/PixelGram";
-    private static final String API_URL = "https://api.github.com/repos/eifohjlsdk/PixelGram/releases/latest";
+    private static final String API_HOST = "api.github.com";
+    private static final String API_URL = "https://" + API_HOST + "/repos/eifohjlsdk/PixelGram/releases/latest";
+    // The only host the "View release" link is ever allowed to open - see the html_url check in
+    // fetchLatestRelease() below. Anything else in the API response is treated as untrusted and
+    // discarded rather than handed to Browser.openUrl().
+    private static final String ASSET_HOST = "github.com";
     private static final long CHECK_INTERVAL_MS = 30L * 24 * 60 * 60 * 1000;
 
     public interface OnCheckDone {
@@ -82,7 +94,17 @@ public class PixelGramUpdateChecker {
     private static Result fetchLatestRelease() {
         HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) new URL(API_URL).openConnection();
+            URL url = new URL(API_URL);
+            // Pin the host actually being connected to, not just the literal string above -
+            // catches a bug (or a future edit) that hands the URL through a redirect/relative
+            // resolution before this point. HttpURLConnection.openConnection() doesn't itself
+            // follow redirects until connect(), so this checks the request we're about to make.
+            if (!API_HOST.equalsIgnoreCase(url.getHost())) {
+                FileLog.e("PixelGramUpdateChecker: refusing to query unexpected host " + url.getHost());
+                return null;
+            }
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setInstanceFollowRedirects(false); // a redirect off api.github.com is exactly what host-pinning exists to catch
             connection.setRequestProperty("Accept", "application/vnd.github+json");
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(10000);
@@ -107,7 +129,7 @@ public class PixelGramUpdateChecker {
             Result result = new Result();
             result.version = tag;
             result.notes = json.optString("body", "");
-            result.url = json.optString("html_url", REPO_URL + "/releases");
+            result.url = safeAssetUrl(json.optString("html_url", null));
             return result;
         } catch (Exception e) {
             FileLog.e(e);
@@ -117,6 +139,26 @@ public class PixelGramUpdateChecker {
                 connection.disconnect();
             }
         }
+    }
+
+    /** The API response's html_url is attacker-influenced if the GitHub account or the connection
+     * itself were ever compromised - never hand it to Browser.openUrl() unverified. Falls back to
+     * the hardcoded releases page (also on ASSET_HOST) for anything that isn't exactly
+     * github.com/a github.com subdomain, rather than silently opening whatever came back. */
+    private static String safeAssetUrl(String candidate) {
+        if (candidate != null) {
+            try {
+                URL parsed = new URL(candidate);
+                String host = parsed.getHost();
+                if ("https".equalsIgnoreCase(parsed.getProtocol()) && host != null
+                        && (host.equalsIgnoreCase(ASSET_HOST) || host.toLowerCase().endsWith("." + ASSET_HOST))) {
+                    return candidate;
+                }
+            } catch (Exception ignored) {
+            }
+            FileLog.e("PixelGramUpdateChecker: discarding release URL on unexpected host: " + candidate);
+        }
+        return REPO_URL + "/releases";
     }
 
     /** True if candidate (a GitHub release tag) is a newer dot-separated version than current
