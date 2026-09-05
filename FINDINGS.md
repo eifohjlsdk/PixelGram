@@ -1694,6 +1694,88 @@ voice-message path's own gain still hasn't been independently measured
 (see the "Mic gain split" section) - this only restores round video to a
 previously-measured value, it doesn't newly measure voice messages.
 
+## Unit-mismatch fix confirmed; clock-domain theory tested and disproven; 0.13s residual investigated (2026-09-05)
+
+**The fix worked.** Re-measured on the corrected build: audio/video went
+from 30.473s/30.167s (0.31s gap) to 30.051s/29.918s (0.13s gap) on the same
+~30s recording. Both durations came down, not just the gap - consistent
+with audio no longer overrunning past video's actual stop rather than both
+tracks just shifting together.
+
+**Clock-domain rate mismatch (Option A/B/C from the earlier "A/V drift fix
+options" section) is ruled out, not just deprioritized.** The dual-clock
+probe at start/stop measured `System.nanoTime()` (`CLOCK_MONOTONIC`)
+advancing 31,269,032,621ns against `SystemClock.elapsedRealtimeNanos()`
+(`CLOCK_BOOTTIME`) advancing 31,269,032,855ns over the same ~31s recording -
+a 234ns difference, about 7.5 parts per billion. That's noise-floor
+measurement jitter between two back-to-back clock reads, not a real rate
+difference - on this device the two clocks tick at effectively identical
+rates. **Option C (cumulative sample count) will not be implemented** - it
+was specifically a hedge against clock-domain rate mismatch, and there's
+nothing here for it to correct. `audioBacklogBuffers` was also `0` at the
+stop signal, confirming no leftover queued audio either - the fix is
+draining the backlog as intended, not just hiding it.
+
+**Investigated where the remaining 0.13s comes from**, per the three
+candidates asked about:
+
+- **Container-duration math (checked, ruled out)**: worth recording that
+  this was considered and eliminated rather than left unchecked.
+  `Track.prepare()` (`MP4Builder`/`Track.java`) computes each track's total
+  reported duration as `(lastSampleTimestamp - firstSampleTimestamp) +
+  minDelta` (the smallest real inter-sample gap observed, standing in for
+  the otherwise-unknowable last sample's own display duration). Worked
+  through this by hand with a small worked example: for evenly-spaced
+  samples, this is numerically exact, not systematically biased toward
+  either track - it isn't a source of the gap. Correcting an
+  overhasty assumption made mid-investigation: audio's shorter per-frame
+  spacing versus video's does *not* asymmetrically bias each track's
+  self-reported container duration once you carry through the arithmetic
+  properly - it only matters for what follows below.
+
+- **Stop-condition catch-up granularity (real, but small)**: audio's stop
+  check runs once per `AudioRecord.read()` iteration - 2048 bytes each, and
+  this device captures float (`audioCaptureIsFloat = true`, confirmed in
+  `startRecording()`), so that's 512 samples at 48kHz = ~10.67ms per
+  iteration. The fixed comparison can only catch up to `videoLastUs` in
+  ~10.67ms increments, so up to one iteration's worth of audio can still
+  trail past video's last frame before the check fires - a real, structural
+  floor, but it caps out around 10.67ms (average nearer half that), not
+  130ms. The same granularity likely also affects `desyncTime`'s own
+  precision at the *start* of recording (found via the same first-buffer
+  search loop), which would shift the stop threshold by a similar amount -
+  so plausibly ~20ms combined, still well short of the observed gap.
+
+- **Encoder/pipeline latency asymmetry (the leading candidate, not yet
+  confirmed)**: `videoLast` is a *capture-time* timestamp
+  (`SurfaceTexture.getTimestamp()`, set in the GL-thread `frameAvailable()`
+  callback) - it marks when a camera frame became available, not when that
+  frame's encoded output actually reaches `mediaMuxer.writeSampleData()`.
+  Video's path from capture to mux is deeper than audio's (GPU-rendered
+  surface input -> hardware encode -> `drainEncoder()`'s
+  `dequeueOutputBuffer(..., 10000)` polling loop) versus audio's more direct
+  `AudioRecord` -> AAC encode path. If that pipeline latency differs
+  meaningfully between the two tracks, it would show up as exactly this
+  kind of residual gap and wouldn't be visible in either the
+  container-duration math or the capture-side timestamps this investigation
+  has looked at so far - both of those only reflect when content was
+  *captured*, not when it was *written*. This is the most likely explanation
+  for the bulk of the 130ms, but isn't confirmed the way the unit bug and
+  the clock-domain theory were - it needs its own instrumented test (logging
+  the gap between a frame's capture timestamp and the wall-clock instant its
+  sample is actually handed to `mediaMuxer.writeSampleData()`, for both
+  tracks) to move from "leading candidate" to "confirmed."
+
+**Net assessment**: the frame-period floor (stop-granularity +
+origin-alignment precision) plausibly accounts for something like 20ms of
+the 130ms - real, but not most of it. This isn't simply "at the floor and
+not worth chasing" - roughly 100ms is still unaccounted for, and pipeline
+latency asymmetry is the leading unconfirmed explanation. 130ms is also
+close enough to the low end of typically-cited human lip-sync perceptibility
+thresholds (audio-trailing-video becomes noticeable to some viewers
+starting around 45-125ms) that it's not obviously below the threshold of
+mattering, unlike the ~20ms floor component alone would be.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
