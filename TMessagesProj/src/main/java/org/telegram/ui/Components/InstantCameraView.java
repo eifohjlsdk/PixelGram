@@ -234,13 +234,17 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
     // Two-pass separable supersample downscale for the round-video encoder path (see
     // drawSupersampledFrame/setupSupersamplePipeline below). Pass 1 downscales horizontally only,
     // straight off the external OES camera texture; pass 2 downscales vertically off the plain 2D
-    // intermediate texture pass 1 wrote, and dithers. Both reuse the same 9-tap 1D Lanczos-2
-    // windowed-sinc weights already shipped (unused) in res/raw/instant_lanczos_frag_oes.glsl -
-    // that asset's own code path never runs because the overlayHelper it's gated behind is always
-    // non-null by the time it's checked (see FINDINGS.md). Tap spacing is one destination-pixel
-    // width in UV space (uniform texelSize, set to 1/videoWidth or 1/videoHeight from Java), not a
-    // fixed source-texel step, so the kernel's support automatically scales with whatever the
-    // actual capture/target resolution ratio turns out to be.
+    // intermediate texture pass 1 wrote, and dithers. Both share the same 9-tap 1D layout below;
+    // see DOWNSCALE_WEIGHTS_BOX's neighboring comment for the actual per-filter weights (Lanczos-2
+    // is ratio-adaptive, computed at setup time; Box/Gaussian are fixed constants).
+    //
+    // Tap spacing is one *source*-texel width in UV space (uniform texelSize, set from Java at
+    // each pass's own call site in drawSupersampledFrame - see the comments there). Originally
+    // this was one *destination*-pixel width instead - for this app's typical ~3:1 capture:output
+    // ratio, that meant sampling only every third source pixel across a needlessly wide reach,
+    // undersampling roughly two-thirds of the source pixels the kernel's own support was
+    // supposedly covering. Found via FINDINGS.md's sharpness-vs-iPhone measurement (confirmed
+    // real, resolution-normalized softness) and fixed here.
     private static final String SUPERSAMPLE_H_VERTEX_SHADER =
             "uniform mat4 uMVPMatrix;\n" +
                     "uniform mat4 uSTMatrix;\n" +
@@ -260,26 +264,87 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     "}\n";
 
     // Weights are (center, +-1, +-2, +-3, +-4) for the shared 9-tap layout the vertex shaders
-    // above set up. Lanczos-2 is the original windowed-sinc weights reused from
-    // res/raw/instant_lanczos_frag_oes.glsl (see the comment above). Box is a flat 9-tap average
-    // (1/9 each) - no negative lobes, so no ringing, at the cost of being softer. Gaussian
-    // (sigma=1.6, i.e. the 9-tap/radius-4 window covers about 2.5 sigma) sits between the two:
-    // still strictly positive/ringing-free, but with more weight concentrated near the center
-    // than the box filter's flat distribution. See PixelGramSettings.DOWNSCALE_FILTER_* for why
-    // this is user-selectable: Lanczos's negative lobes sharpen edges, but on fine high-contrast
-    // detail (beard stubble, hair) that sharpening is ringing - high-frequency content the video
-    // encoder has to spend bits on, which at typical round-video bitrates it often can't afford,
+    // above set up, sampled at one *source*-texel spacing per tap (see texelSize's own fix at its
+    // call sites in drawSupersampledFrame - was one destination-pixel spacing, which for this
+    // app's typical ~3:1 capture:output ratio meant sampling only every third source pixel across
+    // a needlessly wide reach, undersampling roughly two-thirds of the source pixels within the
+    // kernel's own support. See FINDINGS.md's sharpness-vs-iPhone investigation for the
+    // measurement that caught this and the derivation below.
+    //
+    // Lanczos-2 is the only one of the three made ratio-adaptive (see lanczosWeightsForRatio) -
+    // the fixed constant this replaced was reused from res/raw/instant_lanczos_frag_oes.glsl (a
+    // pre-existing, unrelated stock Telegram asset predating this fork - confirmed via git log -S
+    // back to "update to 10.8.1" - itself very likely a copy of the well-known open-source
+    // GPUImage Lanczos resampling filter). That reuse is why the old constant needed to be exact
+    // for only one specific ratio to begin with: whatever ratio it was originally designed for
+    // (not fully pinned down - the closest numerical match found was roughly a Lanczos-2 kernel
+    // evaluated at ~0.4-unit spacing, not an exact fit to any formula tried), it was never
+    // re-derived for this app's own capture:output ratio, which is itself variable (resolution is
+    // user-configurable, 320-960px against a fixed 1920px capture - ratios from 2:1 to 6:1) -
+    // fixing this for exactly 3:1 alone would have just relocated the same mistake to every other
+    // resolution setting.
+    //
+    // Box (flat 1/9 each - no negative lobes, so no ringing, at the cost of being softer) and
+    // Gaussian (sigma=1.6, confirmed via direct computation to be an exact, genuinely-derived
+    // match for "the 9-tap/radius-4 window covers about 2.5 sigma" - not reused from anywhere)
+    // are NOT ratio-adaptive - both still sit at whatever the shared tap spacing now resolves to
+    // (one *source*-texel step, after the fix above), unverified against their own free design
+    // parameters (Box's flat weighting, Gaussian's sigma=1.6) for whether that spacing is what
+    // either was actually tuned for. Left alone here since only Lanczos was asked for - worth
+    // revisiting if Box/Gaussian's own behavior after this fix doesn't hold up.
+    //
+    // See PixelGramSettings.DOWNSCALE_FILTER_* for why the choice between all three is
+    // user-selectable: Lanczos's negative lobes sharpen edges, but on fine high-contrast detail
+    // (beard stubble, hair) that sharpening is ringing - high-frequency content the video encoder
+    // has to spend bits on, which at typical round-video bitrates it often can't afford,
     // degrading into blocking instead. Box/Gaussian trade pre-encode sharpness for a more
     // compressible signal, which can look better post-encode despite looking softer raw.
-    private static final float[] DOWNSCALE_WEIGHTS_LANCZOS = {0.38026f, 0.27667f, 0.08074f, -0.02612f, -0.02143f};
     private static final float[] DOWNSCALE_WEIGHTS_BOX = {1f / 9f, 1f / 9f, 1f / 9f, 1f / 9f, 1f / 9f};
     private static final float[] DOWNSCALE_WEIGHTS_GAUSSIAN = {0.2504f, 0.2060f, 0.1146f, 0.0432f, 0.0110f};
 
-    private static float[] downscaleWeightsFor(int filter) {
+    /** sinc(t) = sin(pi*t)/(pi*t), 1 at t=0 - the building block of the Lanczos window below. */
+    private static double sinc(double t) {
+        if (Math.abs(t) < 1e-9) return 1.0;
+        double piT = Math.PI * t;
+        return Math.sin(piT) / piT;
+    }
+
+    /** Lanczos-2 kernel: sinc(x)*sinc(x/2) for |x|<2, 0 outside - the standard a=2 windowed-sinc
+     * resampling filter. */
+    private static double lanczos2(double x) {
+        if (Math.abs(x) >= 2.0) return 0.0;
+        return sinc(x) * sinc(x / 2.0);
+    }
+
+    /** Computes the 5 weights (center, +-1, +-2, +-3, +-4) for a Lanczos-2 kernel correctly
+     * scaled for a minification by `ratio` (capture pixels per output pixel - e.g. 3.0 for a
+     * 1920-capture/640-output recording), sampled at one *source*-texel spacing per tap - see
+     * this method's own call site and DOWNSCALE_WEIGHTS_BOX's neighboring comment for why this
+     * needs to be ratio-dependent rather than a fixed constant. Minification theory calls for
+     * widening a Lanczos-a kernel's support by the scale factor (here a*ratio source pixels) and
+     * sampling it at every source pixel within that support, not just every `ratio`-th one -
+     * evaluating at x = tapOffset/ratio does exactly that. Falls back to ratio=1 (a plain,
+     * unscaled Lanczos-2 - appropriate if this is ever called somewhere capture and output
+     * resolution match) if given a non-positive ratio. */
+    private static float[] lanczosWeightsForRatio(float ratio) {
+        if (!(ratio > 0f)) ratio = 1f;
+        double[] raw = new double[5];
+        for (int k = 0; k < 5; k++) {
+            raw[k] = lanczos2(k / (double) ratio);
+        }
+        double total = raw[0] + 2.0 * (raw[1] + raw[2] + raw[3] + raw[4]);
+        float[] weights = new float[5];
+        for (int k = 0; k < 5; k++) {
+            weights[k] = (float) (raw[k] / total);
+        }
+        return weights;
+    }
+
+    private static float[] downscaleWeightsFor(int filter, float ratio) {
         switch (filter) {
             case PixelGramSettings.DOWNSCALE_FILTER_BOX: return DOWNSCALE_WEIGHTS_BOX;
             case PixelGramSettings.DOWNSCALE_FILTER_GAUSSIAN: return DOWNSCALE_WEIGHTS_GAUSSIAN;
-            default: return DOWNSCALE_WEIGHTS_LANCZOS;
+            default: return lanczosWeightsForRatio(ratio);
         }
     }
 
@@ -3059,7 +3124,11 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             GLES20.glEnableVertexAttribArray(supersampleHTextureHandle);
             GLES20.glUniformMatrix4fv(supersampleHVertexMatrixHandle, 1, false, mMVPMatrix, 0);
             GLES20.glUniformMatrix4fv(supersampleHTextureMatrixHandle, 1, false, mSTMatrix, 0);
-            GLES20.glUniform2f(supersampleHTexelSizeHandle, 1f / videoWidth, 0f);
+            // Source-texel spacing (was destination-pixel spacing, 1f/videoWidth - see
+            // DOWNSCALE_WEIGHTS_BOX's neighboring comment and FINDINGS.md's sharpness
+            // investigation for why that undersampled the source). This pass reads the raw OES
+            // camera texture, whose actual width is previewSize[surfaceIndex].getWidth().
+            GLES20.glUniform2f(supersampleHTexelSizeHandle, 1f / previewSize[surfaceIndex].getWidth(), 0f);
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex);
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
@@ -3074,7 +3143,11 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             GLES20.glVertexAttribPointer(supersampleVPositionHandle, 3, GLES20.GL_FLOAT, false, 12, InstantCameraView.this.vertexBuffer);
             GLES20.glEnableVertexAttribArray(supersampleVPositionHandle);
             GLES20.glUniformMatrix4fv(supersampleVVertexMatrixHandle, 1, false, mMVPMatrix, 0);
-            GLES20.glUniform2f(supersampleVTexelSizeHandle, 0f, 1f / videoHeight);
+            // Source-texel spacing (was destination-pixel spacing, 1f/videoHeight - same fix as
+            // the H-pass above). This pass reads the intermediate texture, which pass 1 only
+            // downscaled horizontally - its actual height is still supersampleTexHeight (the
+            // source height), not videoHeight.
+            GLES20.glUniform2f(supersampleVTexelSizeHandle, 0f, 1f / supersampleTexHeight);
             GLES20.glUniform1f(supersampleVAlphaHandle, cameraTextureAlpha);
             GLES20.glUniform1f(supersampleVDitherAmpHandle, PixelGramSettings.getDitherAmountLsb() / 255f);
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
@@ -3112,7 +3185,12 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             supersampleFrameBuffer = fb;
             supersampleTexture = tex;
 
-            float[] downscaleWeights = downscaleWeightsFor(PixelGramSettings.getDownscaleFilter());
+            // Capture pixels per output pixel - e.g. 3.0 for the default 1920-capture/640-output
+            // recording. Assumes a roughly-square capture/output (true for every mode this app
+            // currently offers - see FINDINGS.md) so one ratio value serves both the horizontal
+            // and vertical passes despite their different source dimensions.
+            float downscaleRatio = (float) sourcePreviewSize.getWidth() / videoWidth;
+            float[] downscaleWeights = downscaleWeightsFor(PixelGramSettings.getDownscaleFilter(), downscaleRatio);
             int vs1 = loadShader(GLES20.GL_VERTEX_SHADER, SUPERSAMPLE_H_VERTEX_SHADER);
             int fs1 = loadShader(GLES20.GL_FRAGMENT_SHADER, buildSupersampleHFragmentShader(downscaleWeights));
             if (vs1 != 0 && fs1 != 0) {

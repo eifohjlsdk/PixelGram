@@ -2224,6 +2224,73 @@ quantified here - would need a same-scene dither-on-vs-off pair (this
 comparison only had dither-on footage) to isolate its actual contribution
 from the Lanczos tap-spacing issue above.
 
+## Lanczos tap spacing fixed; made ratio-adaptive; weights' origin traced (2026-09-05)
+
+Implemented the fix from the investigation above.
+
+**Tap spacing**: `texelSize` (the vertex shaders' per-tap UV step) now comes
+from the actual source dimensions at each pass's own call site -
+`previewSize[surfaceIndex].getWidth()` for the H-pass (reading the raw OES
+camera texture), `supersampleTexHeight` for the V-pass (reading the
+intermediate texture, which pass 1 only downscaled horizontally - its
+height is still the source height, not `videoHeight`). Previously both
+used the *destination* dimension (`1/videoWidth`, `1/videoHeight`), which
+for this app's typical ~3:1 ratio meant sampling only every third source
+pixel.
+
+**Weights, made ratio-adaptive rather than fixed**: since resolution is
+user-configurable (320-960px against a fixed 1920px capture - ratios from
+2:1 to 6:1), a fixed weight table tuned for exactly 3:1 would have simply
+relocated the same mistake to every other resolution setting. Lanczos-2's
+weights are now computed at pipeline-setup time
+(`lanczosWeightsForRatio()`) from the actual `sourceWidth/videoWidth` ratio
+in effect, evaluating the standard `sinc(x)*sinc(x/2)` kernel at
+`x = tapOffset/ratio` for each of the 9 taps and renormalizing - the
+textbook approach for a properly-scaled minification filter (widen the
+kernel's support by the scale factor, sample it at every source pixel
+within that support, not just every `ratio`-th one).
+
+**Traced the old fixed weights' actual origin, since this was asked
+directly**: **not written by this fork**, contrary to the reverse-engineering
+attempt in the investigation above assuming they were. `git log -S` on the
+constant traces to this fork's own commit `d31fe37d3` ("GL supersampling
+for round video..."), but that commit's own comment says the values were
+*reused* from `res/raw/instant_lanczos_frag_oes.glsl` - and that asset
+itself, checked via `git log --follow`, dates back to a genuine stock
+Telegram commit (`4a8efef9d`, "update to 10.8.1"), long before this fork
+existed. The shader's variable names
+(`oneStepLeftTextureCoordinate`/`twoStepsLeftTextureCoordinate`/etc.) and
+exact weight values match the well-known open-source GPUImage Lanczos
+resampling filter, a commonly-copied GL filter - Telegram's own upstream
+almost certainly copied it from there, unattributed, as many mobile GL
+filter implementations do. **This fork's actual mistake was reusing an
+existing-but-previously-unused asset's weights for a new purpose (the 3:1
+supersample downscale) without checking whether they matched** - a
+misapplication of pre-existing code, not a fresh derivation error. The
+exact ratio/spacing those original weights were designed for isn't fully
+pinned down (closest numerical match found was roughly a Lanczos-2 kernel
+evaluated at ~0.4-unit spacing, not an exact fit to any formula tried) -
+that residual uncertainty doesn't matter now that the weights are computed
+fresh for whatever ratio is actually in effect.
+
+**Box and Gaussian were checked for the same mistake, found different**:
+Box's `1/9` flat weights aren't "derived" from anything ratio-specific in
+the first place - trivially unaffected by this particular question, though
+still subject to the shared tap-spacing fix's effect on what they now
+average. Gaussian's weights, checked by direct computation, are an *exact*
+match for a genuinely fresh derivation (`sigma=1.6`, matching its own
+comment precisely, not reused from anywhere) - this fork's own work, done
+correctly for what it claims to be. **Neither Box nor Gaussian was made
+ratio-adaptive** - both still use the same fixed constants as before,
+now sampling at the corrected (denser) tap spacing but with weight shapes
+that were never verified against *any* specific ratio, sigma=1.6 included.
+Left alone since only Lanczos was asked for; worth revisiting if either's
+behavior after this fix doesn't hold up.
+
+Verified via `:TMessagesProj_App:compileAfatDebugJavaWithJavac`. Not yet
+measured on-device against the confirmed-softer baseline below - that's
+the next recording.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
