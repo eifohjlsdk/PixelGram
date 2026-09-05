@@ -2008,6 +2008,78 @@ handheld recording draws on the full margin Android describes, the total
 could drop to ~36% of the sensor's area. Ships default off; the static-mount
 number should be treated as a floor, not planned around.
 
+## Adaptive Gain implemented: look-ahead limiter + slow leveler, replacing the fixed multiplier (2026-09-05)
+
+Implements the design reported earlier. Motivation: the fixed mic-gain
+multiplier is a single constant that's right for no one recording - 1x is
+too quiet for a normal speaking voice, 3x is sometimes too loud, because the
+correct gain depends on how loud the person actually is at the mic, which
+varies by person, distance, and room. RNNoise (if active) doesn't help with
+this - it removes noise, it does not add level (see the "Mic gain reverted"
+section above for the reasoning error that once conflated the two).
+
+**RNNoise VAD verified before relying on it, per instruction.** Checked
+`rnnoise_process_frame()`'s implementation directly in the vendored
+`denoise.c` rather than assuming: the local variable it returns is literally
+named `vad_prob`, computed by `compute_rnn()`'s dedicated VAD output head.
+This is a confirmed real speech-activity probability, not a value whose
+meaning had to be guessed at - so the silence-freeze logic uses it directly
+rather than building a separate energy-based VAD as the primary mechanism.
+Plumbed through: `speech_enhancer.c`'s `nativeProcessFrame` now returns
+`jfloat` (was `void`, discarding it); `SpeechEnhancer.getLastVadProbability()`
+exposes the most recently completed block's value. A simple energy-threshold
+fallback (-50dBFS floor) is still used, but only when Speech Enhancement is
+off entirely and no RNNoise signal exists at all - not as a substitute for a
+confirmed-real signal, just for the case where that signal isn't running.
+
+**`AdaptiveGainProcessor`** (new class, `org.telegram.messenger.camera`) -
+named to avoid confusion with `PixelGramSettings.isAgcEnabled()`, which
+wraps the *platform's* `android.media.audiofx.AutomaticGainControl` effect,
+a different mechanism entirely (already confirmed unavailable on this
+device). Two independently-smoothed gain components:
+- **Slow leveler** (`slowGainDb`): updated once per incoming buffer, target
+  -20dBFS RMS by default (now adjustable, `getAdaptiveGainTargetDb()`/
+  `ADAPTIVE_GAIN_TARGET_DB_VALUES`, -30 to -12dB in 3dB steps). Asymmetric
+  timing - 1s to reduce gain if a passage runs hot, 4s to raise it back -
+  so a brief pause mid-sentence doesn't get amplified before the next word
+  arrives. Frozen entirely during non-speech (per the VAD signal above), so
+  gain doesn't creep up during silence and overshoot when speech resumes.
+  Clamped to the requested 0.3x-8x bound (-10.46dB to +18.06dB).
+- **Fast limiter** (`limiterGainDb`): -3dBFS ceiling, matching the existing
+  soft limiter's own headroom choice. Smoothed per-sample (5ms attack,
+  100ms release - standard look-ahead-limiter ballistics), not gated on
+  speech/silence - clipping protection should never turn off.
+
+**Look-ahead without a separate delay buffer**: audio already arrives in
+~10ms chunks. Because this class sees an entire incoming buffer before
+writing any of it back, it computes that buffer's own peak first and
+shapes gain across the whole buffer accordingly - genuine look-ahead within
+the buffer's own ~10ms window (in the range real limiters use), no added
+latency. The simplification this implies: gain is computed once per buffer
+rather than continuously varying sample-by-sample within it - documented in
+the class's own doc as a deliberate choice, not an oversight.
+
+**Toggle relationship, as specified**: on replaces the fixed multiplier
+entirely (both "Microphone Gain" pickers grey out, showing "Adaptive Gain
+active" instead of their value); off falls back to exactly today's
+behavior, unchanged. One setting covers both round video and voice
+messages (unlike the mic-gain multiplier, which is split per-path) - if a
+per-path split turns out to matter, that's a follow-up, not implemented
+here.
+
+Wired into both recording paths (`InstantCameraView` for round video,
+`MediaController` for voice messages), same per-recording-session lifecycle
+as `SpeechEnhancer`/`VoiceIsolationProcessor` - constructed only when
+capturing in float (same requirement Speech Enhancement already has).
+
+Verified via `:TMessagesProj_App:assembleAfatDebug` (exercises the native
+JNI signature change, not just the Java side) and confirmed the new class
+is present in the built APK's dex. **Not yet tuned by ear** - the time
+constants and thresholds above are principled starting points (matching
+established limiter/leveler design conventions and this app's own existing
+-3dBFS soft-limiter headroom), not something verified against a real
+recording yet. Ships off by default per the standing convention.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

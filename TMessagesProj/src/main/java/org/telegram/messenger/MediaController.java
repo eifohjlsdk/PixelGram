@@ -1089,6 +1089,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     // selected - see SpeechEnhancer's class doc. Applied first in the chain, before
     // voiceIsolationProcessor. Owns a native handle - must release() when the recording ends.
     private org.telegram.messenger.camera.SpeechEnhancer speechEnhancer;
+    // Null unless capturing in float AND PixelGramSettings.isAdaptiveGainEnabled() - see
+    // AdaptiveGainProcessor's class doc. Replaces the fixed mic-gain multiplier outright when
+    // active, same per-recording lifecycle as speechEnhancer/voiceIsolationProcessor.
+    private org.telegram.messenger.camera.AdaptiveGainProcessor adaptiveGainProcessor;
     private NoiseSuppressor audioNoiseSuppressor;
     private AutomaticGainControl audioAutomaticGainControl;
     private AcousticEchoCanceler audioEchoCanceler;
@@ -1163,7 +1167,15 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         if (voiceIsolationProcessor != null) {
                             voiceIsolationProcessor.processFloat(buffer, len);
                         }
-                        PixelGramSettings.applyMicGainFloatVoiceMessage(buffer, len);
+                        // Adaptive Gain replaces the fixed multiplier outright when on - see
+                        // AdaptiveGainProcessor's class doc - rather than stacking with it.
+                        if (adaptiveGainProcessor != null) {
+                            adaptiveGainProcessor.processFloat(buffer, len,
+                                    speechEnhancer != null ? speechEnhancer.getLastVadProbability() : 0f,
+                                    speechEnhancer != null);
+                        } else {
+                            PixelGramSettings.applyMicGainFloatVoiceMessage(buffer, len);
+                        }
                     } else {
                         if (voiceIsolationProcessor != null) {
                             voiceIsolationProcessor.process(buffer, len);
@@ -4547,8 +4559,12 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         // InstantCameraView's identical construction for why there's no isAvailable() check.
         speechEnhancer = (audioCaptureIsFloat && PixelGramSettings.getSpeechEnhancementMode() != PixelGramSettings.SPEECH_ENHANCEMENT_OFF)
                 ? new org.telegram.messenger.camera.SpeechEnhancer() : null;
+        // Requires float capture, same reason as speechEnhancer above.
+        adaptiveGainProcessor = (audioCaptureIsFloat && PixelGramSettings.isAdaptiveGainEnabled())
+                ? new org.telegram.messenger.camera.AdaptiveGainProcessor(sampleRate) : null;
         PixelCameraLog.d("voice message audio capture format: " + (audioCaptureIsFloat ? "PCM_FLOAT" : "PCM_16BIT (fallback)")
-                + " speechEnhancement:" + (speechEnhancer != null ? PixelGramSettings.getSpeechEnhancementMode() : "off(unavailable)"));
+                + " speechEnhancement:" + (speechEnhancer != null ? PixelGramSettings.getSpeechEnhancementMode() : "off(unavailable)")
+                + " micGain:" + (adaptiveGainProcessor != null ? "adaptive(target:" + PixelGramSettings.getAdaptiveGainTargetDb() + "dB)" : PixelGramSettings.getMicGainMultiplierVoiceMessage() + "x"));
         return recorder;
     }
 
@@ -4647,6 +4663,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 speechEnhancer.release();
                 speechEnhancer = null;
             }
+            adaptiveGainProcessor = null; // no native resources - just drop the per-recording instance
         } catch (Exception e) {
             FileLog.e(e);
         }

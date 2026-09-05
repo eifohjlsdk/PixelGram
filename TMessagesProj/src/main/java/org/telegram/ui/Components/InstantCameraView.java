@@ -97,6 +97,7 @@ import org.telegram.messenger.camera.CameraSession;
 import org.telegram.messenger.camera.PixelCameraLog;
 import org.telegram.messenger.camera.PixelGramSettings;
 import org.telegram.messenger.camera.Size;
+import org.telegram.messenger.camera.AdaptiveGainProcessor;
 import org.telegram.messenger.camera.SpeechEnhancer;
 import org.telegram.messenger.camera.VoiceIsolationProcessor;
 import org.telegram.messenger.video.MP4Builder;
@@ -2388,6 +2389,11 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         // selected - see SpeechEnhancer's class doc. Applied first in the chain, before
         // voiceIsolationProcessor. Owns a native handle - must release() when the recording ends.
         private SpeechEnhancer speechEnhancer;
+        // Null unless capturing in float AND PixelGramSettings.isAdaptiveGainEnabled() - same
+        // per-recording lifecycle as speechEnhancer/voiceIsolationProcessor. Replaces the fixed
+        // mic-gain multiplier outright when active, applied at the same point in the chain - see
+        // AdaptiveGainProcessor's class doc.
+        private AdaptiveGainProcessor adaptiveGainProcessor;
         // Set in prepareEncoder() based on which encoding the AudioRecord constructor actually
         // accepted - ENCODING_PCM_FLOAT is preferred (see FINDINGS.md's audio input-capability
         // investigation) but isn't universally guaranteed for the record direction the way it is
@@ -2466,7 +2472,16 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                                 if (voiceIsolationProcessor != null) {
                                     voiceIsolationProcessor.processFloat(byteBuffer, readResult);
                                 }
-                                PixelGramSettings.applyMicGainFloat(byteBuffer, readResult);
+                                // Adaptive Gain replaces the fixed multiplier outright when on -
+                                // see AdaptiveGainProcessor's class doc - rather than stacking
+                                // with it.
+                                if (adaptiveGainProcessor != null) {
+                                    adaptiveGainProcessor.processFloat(byteBuffer, readResult,
+                                            speechEnhancer != null ? speechEnhancer.getLastVadProbability() : 0f,
+                                            speechEnhancer != null);
+                                } else {
+                                    PixelGramSettings.applyMicGainFloat(byteBuffer, readResult);
+                                }
                             } else {
                                 if (voiceIsolationProcessor != null) {
                                     voiceIsolationProcessor.process(byteBuffer, readResult);
@@ -2557,6 +2572,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         speechEnhancer.release();
                         speechEnhancer = null;
                     }
+                    adaptiveGainProcessor = null; // no native resources - just drop the per-recording instance
                     audioRecorder.release();
                 } catch (Exception e) {
                     FileLog.e(e);
@@ -3737,6 +3753,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 // vendored/compiled in, not a device-dependent platform feature.
                 speechEnhancer = (audioCaptureIsFloat && PixelGramSettings.getSpeechEnhancementMode() != PixelGramSettings.SPEECH_ENHANCEMENT_OFF)
                         ? new SpeechEnhancer() : null;
+                // Requires float capture, same reason as speechEnhancer above.
+                adaptiveGainProcessor = (audioCaptureIsFloat && PixelGramSettings.isAdaptiveGainEnabled())
+                        ? new AdaptiveGainProcessor(audioSampleRate) : null;
                 // Each effect is independently gated on its own setting and isAvailable() check.
                 // Actual enabled state is read back via getEnabled() (not assumed from the
                 // setEnabled() call we just made) since AOSP documents that some devices insert
@@ -3901,7 +3920,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " agc:" + agcActuallyEnabled
                             + " echoCancellation:" + echoCancellationActuallyEnabled
                             + " audioCapture:" + (audioCaptureIsFloat ? "float" : "pcm16")
-                            + " micGain:" + PixelGramSettings.getMicGainMultiplier() + "x"
+                            + " micGain:" + (adaptiveGainProcessor != null ? "adaptive(target:" + PixelGramSettings.getAdaptiveGainTargetDb() + "dB)" : PixelGramSettings.getMicGainMultiplier() + "x")
                             + " micDirection:" + (currentMicDirection != null ? currentMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
                             + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")"
                             + " voiceIsolation:" + PixelGramSettings.getVoiceIsolationMode() + " gateThreshold:" + PixelGramSettings.getVoiceIsolationGateThresholdDb()

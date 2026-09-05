@@ -48,23 +48,28 @@ JNIEXPORT void JNICALL Java_org_telegram_messenger_camera_SpeechEnhancer_nativeD
 // is a near-silent, badly-processed signal that LOOKS like "the denoiser barely does anything"
 // rather than any obvious error. That failure mode is exactly why this scaling is applied here,
 // once, right next to the actual rnnoise_process_frame() call, rather than left to callers.
-JNIEXPORT void JNICALL Java_org_telegram_messenger_camera_SpeechEnhancer_nativeProcessFrame(JNIEnv *env, jclass clazz, jlong handle, jobject buffer, jint offsetFloats) {
-    if (handle == 0) return;
+// Returns RNNoise's own per-frame voice-activity probability in [0,1] (denoise.c: the local
+// variable computed by compute_rnn()'s dedicated VAD output head is literally named "vad_prob"
+// and returned directly - confirmed by reading the vendored source, not assumed from rnnoise.h's
+// own comments, which say nothing about the return value at all). AdaptiveGainProcessor uses this
+// to freeze its slow gain adaptation during non-speech - see FINDINGS.md's Adaptive Gain section.
+JNIEXPORT jfloat JNICALL Java_org_telegram_messenger_camera_SpeechEnhancer_nativeProcessFrame(JNIEnv *env, jclass clazz, jlong handle, jobject buffer, jint offsetFloats) {
+    if (handle == 0) return 0.0f;
     DenoiseState *st = (DenoiseState *) (intptr_t) handle;
 
-    if (buffer == NULL || offsetFloats < 0) return;
+    if (buffer == NULL || offsetFloats < 0) return 0.0f;
 
     // Defense in depth: never trust the caller's offset alone. A Java-side miscount (or any
     // future caller that doesn't respect SpeechEnhancer's own bookkeeping) must not turn into
     // an out-of-bounds native write - GetDirectBufferCapacity() is the only source of truth for
     // how large this buffer actually is, independent of whatever offsetFloats claims.
     jlong capacityBytes = (*env)->GetDirectBufferCapacity(env, buffer);
-    if (capacityBytes <= 0) return;
+    if (capacityBytes <= 0) return 0.0f;
     jlong capacityFloats = capacityBytes / (jlong) sizeof(float);
-    if ((jlong) offsetFloats + SPEECH_ENHANCER_FRAME_SIZE > capacityFloats) return;
+    if ((jlong) offsetFloats + SPEECH_ENHANCER_FRAME_SIZE > capacityFloats) return 0.0f;
 
     float *base = (float *) (*env)->GetDirectBufferAddress(env, buffer);
-    if (base == NULL) return;
+    if (base == NULL) return 0.0f;
     float *samples = base + offsetFloats;
 
     float scaled[SPEECH_ENHANCER_FRAME_SIZE];
@@ -72,7 +77,7 @@ JNIEXPORT void JNICALL Java_org_telegram_messenger_camera_SpeechEnhancer_nativeP
         scaled[i] = samples[i] * 32768.0f;      // [-1, 1]  ->  FloatS16
     }
 
-    rnnoise_process_frame(st, scaled, scaled);  // in-place on the rescaled copy
+    float vadProb = rnnoise_process_frame(st, scaled, scaled);  // in-place on the rescaled copy
 
     for (int i = 0; i < SPEECH_ENHANCER_FRAME_SIZE; i++) {
         samples[i] = scaled[i] * (1.0f / 32768.0f); // FloatS16  ->  [-1, 1]
@@ -80,4 +85,5 @@ JNIEXPORT void JNICALL Java_org_telegram_messenger_camera_SpeechEnhancer_nativeP
     // Deliberately not clamped back to [-1,1] here - PixelGramSettings.applyMicGainFloat's soft
     // limiter (downstream, same as every other stage in this chain) is the one place clamping
     // happens, same as for the un-denoised signal.
+    return vadProb;
 }

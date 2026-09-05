@@ -85,6 +85,13 @@ public class SpeechEnhancer {
     private int readyHead;
     private int readyCount;
 
+    // RNNoise's own per-frame voice-activity probability (confirmed via denoise.c's source -
+    // rnnoise_process_frame() returns its RNN's dedicated VAD output head directly, not
+    // something else - see speech_enhancer.c's comment), from the most recently completed
+    // 480-sample block. 0 until at least one block has completed. AdaptiveGainProcessor reads
+    // this to decide whether to freeze its slow gain adaptation - see FINDINGS.md.
+    private float lastVadProbability;
+
     public SpeechEnhancer() {
         nativeHandle = nativeCreate();
     }
@@ -114,7 +121,7 @@ public class SpeechEnhancer {
                 for (int k = 0; k < FRAME_SIZE; k++) {
                     nativeScratch.putFloat(k * 4, pendingRaw[k]);
                 }
-                nativeProcessFrame(nativeHandle, nativeScratch, 0);
+                lastVadProbability = nativeProcessFrame(nativeHandle, nativeScratch, 0);
                 // Wet/dry blend: content RNNoise fully suppresses (denoised~0) reappears at
                 // (1-wet) of its original amplitude instead of disappearing outright - a fixed,
                 // predictable attenuation (20*log10(1-wet) dB), not elimination. Read live per
@@ -163,9 +170,17 @@ public class SpeechEnhancer {
         }
     }
 
+    /** RNNoise's own voice-activity probability ([0,1]) from the most recently completed
+     * 480-sample block - 0 before the first block completes (start-of-recording priming delay,
+     * same as the rest of this class). Confirmed to genuinely be a speech probability (not
+     * guessed at) - see the field's own doc. */
+    public float getLastVadProbability() {
+        return lastVadProbability;
+    }
+
     private static native long nativeCreate();
 
     private static native void nativeDestroy(long handle);
 
-    private static native void nativeProcessFrame(long handle, ByteBuffer buffer, int offsetFloats);
+    private static native float nativeProcessFrame(long handle, ByteBuffer buffer, int offsetFloats);
 }

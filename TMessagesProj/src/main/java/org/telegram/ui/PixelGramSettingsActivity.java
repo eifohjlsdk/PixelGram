@@ -95,6 +95,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int noiseSuppressionRow;
     private int agcRow;
     private int echoCancellationRow;
+    private int adaptiveGainRow;
+    private int adaptiveGainTargetRow;
     private int micGainRow;
     // Separate row/setting from micGainRow (round video) - see PixelGramSettings.
     // DEFAULT_MIC_GAIN_VOICE_MESSAGE's doc for why these aren't shared.
@@ -174,6 +176,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
         noiseSuppressionRow = rowCount++;
         agcRow = rowCount++;
         echoCancellationRow = rowCount++;
+        adaptiveGainRow = rowCount++;
+        adaptiveGainTargetRow = rowCount++;
         micGainRow = rowCount++;
         micGainVoiceMessageRow = rowCount++;
         micDirectionRow = rowCount++;
@@ -279,10 +283,27 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     PixelGramSettings.setEchoCancellationEnabled(!PixelGramSettings.isEchoCancellationEnabled());
                     ((TextCheckCell) view).setChecked(PixelGramSettings.isEchoCancellationEnabled());
                 }
+            } else if (position == adaptiveGainRow) {
+                PixelGramSettings.setAdaptiveGainEnabled(!PixelGramSettings.isAdaptiveGainEnabled());
+                ((TextCheckCell) view).setChecked(PixelGramSettings.isAdaptiveGainEnabled());
+                // Greys out (or restores) the fixed mic-gain pickers and enables/disables the
+                // target-level row - see AdaptiveGainProcessor's class doc for the "on replaces
+                // the fixed multiply entirely" relationship this reflects.
+                listAdapter.notifyItemChanged(adaptiveGainTargetRow);
+                listAdapter.notifyItemChanged(micGainRow);
+                listAdapter.notifyItemChanged(micGainVoiceMessageRow);
+            } else if (position == adaptiveGainTargetRow) {
+                if (PixelGramSettings.isAdaptiveGainEnabled()) {
+                    showAdaptiveGainTargetDialog();
+                }
             } else if (position == micGainRow) {
-                showMicGainDialog();
+                if (!PixelGramSettings.isAdaptiveGainEnabled()) {
+                    showMicGainDialog();
+                }
             } else if (position == micGainVoiceMessageRow) {
-                showMicGainVoiceMessageDialog();
+                if (!PixelGramSettings.isAdaptiveGainEnabled()) {
+                    showMicGainVoiceMessageDialog();
+                }
             } else if (position == micDirectionRow) {
                 // Same click-bypass issue as the audio-effect check rows: isEnabled(holder)
                 // only dims the row, it doesn't stop this listener from firing. Re-check here.
@@ -607,6 +628,21 @@ public class PixelGramSettingsActivity extends BaseFragment {
         showDialog(builder.create());
     }
 
+    private void showAdaptiveGainTargetDialog() {
+        float[] values = PixelGramSettings.ADAPTIVE_GAIN_TARGET_DB_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            options[i] = formatGateThreshold(values[i]) + (values[i] == PixelGramSettings.DEFAULT_ADAPTIVE_GAIN_TARGET_DB ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Adaptive Gain Target (RMS)");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setAdaptiveGainTargetDb(values[which]);
+            listAdapter.notifyItemChanged(adaptiveGainTargetRow);
+        });
+        showDialog(builder.create());
+    }
+
     private interface IntSetter {
         void set(int value);
     }
@@ -875,7 +911,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == noiseSuppressionRow && NoiseSuppressor.isAvailable())
                     || (pos == agcRow && AutomaticGainControl.isAvailable())
                     || (pos == echoCancellationRow && AcousticEchoCanceler.isAvailable())
-                    || pos == micGainRow || pos == micGainVoiceMessageRow
+                    || pos == adaptiveGainRow
+                    || (pos == adaptiveGainTargetRow && PixelGramSettings.isAdaptiveGainEnabled())
+                    || (pos == micGainRow && !PixelGramSettings.isAdaptiveGainEnabled())
+                    || (pos == micGainVoiceMessageRow && !PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == micDirectionRow && PixelGramSettings.isMicDirectionSupported())
                     || (pos == micFieldDimensionRow && PixelGramSettings.isMicFieldDimensionSupported())
                     || pos == voiceIsolationRow || pos == gateThresholdRow
@@ -961,10 +1000,18 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndValue("Dither Amount", formatDitherAmount(PixelGramSettings.getDitherAmountLsb()), false);
                     } else if (position == voiceEnhancementRow) {
                         cell.setTextAndValue("Voice Enhancement", voiceEnhancementName(PixelGramSettings.getVoiceEnhancementMode()), true);
+                    } else if (position == adaptiveGainTargetRow) {
+                        boolean enabled = PixelGramSettings.isAdaptiveGainEnabled();
+                        cell.setTextAndValue("Adaptive Gain Target" + (enabled ? "" : " (enable Adaptive Gain)"), formatGateThreshold(PixelGramSettings.getAdaptiveGainTargetDb()) + " RMS", true);
+                        cell.setAlpha(enabled ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == micGainRow) {
-                        cell.setTextAndValue("Microphone Gain (Round Video)", formatMicGain(PixelGramSettings.getMicGainMode()), true);
+                        boolean adaptive = PixelGramSettings.isAdaptiveGainEnabled();
+                        cell.setTextAndValue("Microphone Gain (Round Video)", adaptive ? "Adaptive Gain active" : formatMicGain(PixelGramSettings.getMicGainMode()), true);
+                        cell.setAlpha(adaptive ? DISABLED_ROW_ALPHA : 1f);
                     } else if (position == micGainVoiceMessageRow) {
-                        cell.setTextAndValue("Microphone Gain (Voice Messages)", formatMicGain(PixelGramSettings.getMicGainModeVoiceMessage()), true);
+                        boolean adaptive = PixelGramSettings.isAdaptiveGainEnabled();
+                        cell.setTextAndValue("Microphone Gain (Voice Messages)", adaptive ? "Adaptive Gain active" : formatMicGain(PixelGramSettings.getMicGainModeVoiceMessage()), true);
+                        cell.setAlpha(adaptive ? DISABLED_ROW_ALPHA : 1f);
                     } else if (position == micDirectionRow) {
                         boolean supported = PixelGramSettings.isMicDirectionSupported();
                         cell.setTextAndValue("Microphone Direction" + (supported ? "" : " (unavailable)"), formatMicDirection(PixelGramSettings.getMicDirectionMode()), true);
@@ -1022,6 +1069,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         boolean available = AcousticEchoCanceler.isAvailable();
                         cell.setTextAndCheck("Echo Cancellation" + (available ? "" : " (unavailable)"), PixelGramSettings.isEchoCancellationEnabled(), true);
                         cell.setAlpha(available ? 1f : DISABLED_ROW_ALPHA);
+                    } else if (position == adaptiveGainRow) {
+                        cell.setTextAndCheck("Adaptive Gain", PixelGramSettings.isAdaptiveGainEnabled(), true);
                     }
                     break;
                 }
@@ -1051,7 +1100,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
             } else if (position == headerCredentialsRow || position == headerRecordingRow || position == headerQualityRow || position == headerAudioRow || position == headerUpdatesRow) {
                 return TYPE_HEADER;
             } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == lowLightBoostRow || position == previewStabilizationRow
-                    || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow) {
+                    || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow || position == adaptiveGainRow) {
                 return TYPE_CHECK;
             } else if (position == updateInfoRow || position == lowLightBoostInfoRow) {
                 return TYPE_INFO;

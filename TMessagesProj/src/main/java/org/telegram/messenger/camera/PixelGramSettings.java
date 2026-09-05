@@ -128,6 +128,12 @@ public class PixelGramSettings {
     // Separate preference from KEY_MIC_GAIN (round video) - see DEFAULT_MIC_GAIN_VOICE_MESSAGE's
     // doc for why these need independent defaults rather than sharing one setting.
     private static final String KEY_MIC_GAIN_VOICE_MESSAGE = "mic_gain_mode_voice_message";
+    // Distinct from KEY_AGC (that's the platform's android.media.audiofx.AutomaticGainControl
+    // effect, a different mechanism entirely - see DEFAULT_AGC's own doc). "Adaptive Gain" is
+    // this app's own look-ahead-limiter-based software AGC, replacing the fixed mic-gain
+    // multiplier outright when enabled - see AdaptiveGainProcessor's class doc.
+    private static final String KEY_ADAPTIVE_GAIN_ENABLED = "adaptive_gain_enabled";
+    private static final String KEY_ADAPTIVE_GAIN_TARGET_DB = "adaptive_gain_target_db";
     private static final String KEY_MIC_DIRECTION_MODE = "mic_direction_mode";
     private static final String KEY_MIC_FIELD_DIMENSION = "mic_field_dimension";
     private static final String KEY_VOICE_ISOLATION_MODE = "voice_isolation_mode";
@@ -254,6 +260,16 @@ public class PixelGramSettings {
     // measurement - this is a compensation, not a confirmed fix. See FINDINGS.md for why the two
     // paths' actual level gap is still unexplained and worth measuring properly.
     public static final int DEFAULT_MIC_GAIN_VOICE_MESSAGE = MIC_GAIN_3X;
+    // Off by default - new and unmeasured against real recordings, same "off until measured"
+    // convention as this session's other new features. When on, replaces the fixed mic-gain
+    // multiplier entirely (the Microphone Gain picker(s) grey out) rather than stacking with it -
+    // see AdaptiveGainProcessor's class doc for the full design and why this relationship was
+    // chosen over running both.
+    public static final boolean DEFAULT_ADAPTIVE_GAIN = false;
+    // RMS target for the slow leveler. -20dBFS is a conventional speech-leveling target
+    // (comfortable headroom under the -3dBFS peak ceiling); adjustable per request.
+    public static final float DEFAULT_ADAPTIVE_GAIN_TARGET_DB = -20f;
+    public static final float[] ADAPTIVE_GAIN_TARGET_DB_VALUES = {-30f, -27f, -24f, -21f, -20f, -18f, -15f, -12f};
     public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
     // Off as of 1.0.2: the three-way comparison in FINDINGS.md found the bandpass/gate chain adds
@@ -495,6 +511,22 @@ public class PixelGramSettings {
 
     public static float getMicGainMultiplierVoiceMessage() {
         return micGainMultiplierForMode(getMicGainModeVoiceMessage());
+    }
+
+    public static boolean isAdaptiveGainEnabled() {
+        return prefs().getBoolean(KEY_ADAPTIVE_GAIN_ENABLED, DEFAULT_ADAPTIVE_GAIN);
+    }
+
+    public static void setAdaptiveGainEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_ADAPTIVE_GAIN_ENABLED, enabled).apply();
+    }
+
+    public static float getAdaptiveGainTargetDb() {
+        return prefs().getFloat(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB);
+    }
+
+    public static void setAdaptiveGainTargetDb(float db) {
+        prefs().edit().putFloat(KEY_ADAPTIVE_GAIN_TARGET_DB, db).apply();
     }
 
     private static float micGainMultiplierForMode(int mode) {
@@ -771,6 +803,8 @@ public class PixelGramSettings {
                 .putBoolean(KEY_ECHO_CANCELLATION, DEFAULT_ECHO_CANCELLATION)
                 .putInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN)
                 .putInt(KEY_MIC_GAIN_VOICE_MESSAGE, DEFAULT_MIC_GAIN_VOICE_MESSAGE)
+                .putBoolean(KEY_ADAPTIVE_GAIN_ENABLED, DEFAULT_ADAPTIVE_GAIN)
+                .putFloat(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB)
                 .putInt(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE)
                 .putFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION)
                 .putInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE)
