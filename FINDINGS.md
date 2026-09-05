@@ -2099,6 +2099,131 @@ actually outweigh whatever it costs. A quiet-room comparison alone can't
 distinguish "RNNoise isn't helping here" from "RNNoise never helps enough to
 be worth it" - only a noisy-room test can.
 
+## Sharpness comparison vs iPhone: real, measured softness, resolution-normalized (2026-09-05)
+
+Compared matched circles (`video.mp4` iPhone at 400x400, `1788631976316.mp4`
+ours at 640x640, same pose/framing, static scene). No image library was
+available (no PIL/numpy/cv2/ImageMagick) - reused the pure-Python PNG
+decoder from the Preview Stabilization crop measurement, adding a
+Laplacian-variance sharpness metric (standard blur metric: variance of a
+3x3 Laplacian response, higher = sharper) and a direct edge-width
+measurement (10%-90% transition span across a real hairline edge, in
+pixels).
+
+**Normalized for the resolution difference first**, per the request: our
+640x640 frame downscaled to 400x400 with ffmpeg's unbiased `area` algorithm
+(box averaging, no sharpening/ringing bias of its own) to match the
+iPhone's actual pixel pitch, *before* any comparison - this puts both
+images on the same real-world mm-per-pixel scale, so the metrics below are
+comparing like for like, not penalizing ours for merely having more pixels
+to spread the same detail across.
+
+| Metric (at matched 400x400 pixel pitch) | iPhone | Ours (downscaled) | Ratio |
+|---|---|---|---|
+| Laplacian variance, full frame | 3438.3 | 815.6 | **4.2x lower** |
+| Edge width (10-90%), hairline | ~10-12px | ~17-18px | **~1.6x wider** |
+
+**Confirmed: the softness is real, not a resolution artifact.** Even after
+matching pixel pitch, ours has meaningfully less high-frequency energy and
+meaningfully wider edge transitions. Visual comparison at matched
+resolution (cropped to the same hairline/glasses region) shows the same
+thing directly - individual hair strands and skin texture resolved on the
+iPhone are smoothed away on ours.
+
+**Radial pattern (center/mid/edge zones) was inconclusive from this single
+frame** - the ratio between ours and the iPhone's Laplacian variance
+wasn't monotonic across zones (center 0.18x, mid 0.38x, edge 0.22x of the
+iPhone's own zone value). This is likely confounded by real content
+differing between zones (wall vs. face vs. hair each have very different
+natural high-frequency content), not necessarily evidence about whether
+the *processing itself* degrades unevenly across the frame. A clean answer
+to "uniform or worse at the edges" would need a uniform test target (a
+resolution chart or grid), not natural face content - not pursued here.
+
+### Lanczos tap-spacing investigation
+
+Confirmed directly in `InstantCameraView.java`'s own comment
+(`SUPERSAMPLE_H_VERTEX_SHADER`'s doc): tap spacing is one *destination*-pixel
+width in UV space (`texelSize = 1/videoWidth` or `1/videoHeight`), not a
+fixed source-texel step. For this recording's 3:1 ratio (1920 capture ->
+640 output), one destination-pixel step in UV equals exactly **3 source
+pixels** - so the shader's 9 taps (center + 4 pairs, at
+0/±1/±2/±3/±4 x texelSize) land at source-pixel offsets 0, ±3, ±6, ±9, ±12.
+That's a 24-source-pixel-wide reach, but only 9 discrete source pixels
+within it are actually sampled - **the other roughly two-thirds of source
+pixels in the kernel's own support window are never looked at**, aside from
+whatever incidental blending `GL_LINEAR` provides if a tap doesn't land
+exactly on a texel center (which the destination-pixel-aligned UV math
+likely does, for at least the on-axis taps).
+
+**This is wider than ideal, in the specific sense of being sparse, not
+(only) in the sense of being spatially too wide.** Standard minification
+filtering theory (Lanczos or any windowed-sinc filter used to downscale by
+a factor `N`) calls for widening the kernel's support by `N` *and* sampling
+it densely enough to integrate the source signal across that support - the
+zero-crossings should land every `N` source pixels, but every source pixel
+in between needs its own tap, not just the ones a whole destination-pixel
+apart. Skipping two out of every three source pixels is a real risk of
+letting high-frequency source content between the sample points go
+unaveraged - which reads perceptually as haze/softness on natural texture
+(skin, hair) rather than classic jagged aliasing, since there's no hard
+geometric edge for it to show up as stair-stepping on.
+
+**Computed what a correctly-3x-scaled Lanczos-2 kernel should look like**,
+for comparison (`lanczos2(x) = sinc(x)*sinc(x/2)` for `|x|<2`, support
+scaled to `a*N = 2*3 = 6` source pixels, sampled at every source pixel,
+renormalized to sum to 1):
+
+| Source-pixel offset | Correctly-scaled weight |
+|---|---|
+| 0 | 0.3301 |
+| ±1 | 0.2607 |
+| ±2 | 0.1129 |
+| ±3 | 0.0000 (exact zero-crossing) |
+| ±4 | -0.0282 |
+| ±5 | -0.0104 |
+| ±6 | 0.0000 (exact zero-crossing) |
+
+Because ±3 and ±6 land exactly on this kernel's zero-crossings, a 9-tap
+structure (center + 4 pairs, same vertex-shader shape already in place)
+reaches out to ±4 *source* pixels and captures nearly all of the kernel's
+real mass - truncating only the small ±5 lobe (-0.0104, a minor loss). The
+fix this suggests is small in code terms: change `texelSize` to one
+*source*-texel width (`1/1920` for the H-pass's capture texture, and the
+matching source width for the V-pass's intermediate texture) instead of
+one destination-pixel width, and swap in weights `[0.3301, 0.2607, 0.1129,
+0, -0.0282]` for center/±1/±2/±3/±4 - no change to the tap *count* or the
+shader's structure, just what each tap measures and how it's weighted.
+
+**Caveat**: reverse-engineering the *shipped* weights
+(`{0.38026, 0.27667, 0.08074, -0.02612, -0.02143}`) against a simple
+integer-or-fractional Lanczos-2 evaluation didn't land on an exact match at
+any scale factor tried - they're close in shape to a ~0.4-spacing
+evaluation but not identical, so their original derivation (this shader
+reused weights from a different, previously-unused asset - see the
+existing code comment) isn't fully pinned down here. That uncertainty
+doesn't change the tap-spacing diagnosis above, which follows directly from
+the code's own stated behavior, independent of exactly how the current
+weight constants were derived.
+
+**Not yet implemented** - this was investigation, not a fix, per request.
+
+### Dither's possible contribution
+
+`dither:2.0xLSB` was active for this recording (per the user - double the
+1x default). Dithering necessarily adds a small amount of pseudo-random
+noise before 8-bit quantization, by design, to break up banding - that's
+extra high-frequency energy in the pre-encode signal. Plausible mechanism
+for it to read as haze: a rate-limited video encoder can't distinguish
+"real fine texture" from "injected dither noise" when deciding what detail
+to spend bits on, so competing with dither noise for the same bit budget
+could cause *real* detail to be quantized away more aggressively than it
+would be without the extra noise - a softer *encoded* result even though
+the raw pre-encode signal has more (dither-added) energy, not less. Not
+quantified here - would need a same-scene dither-on-vs-off pair (this
+comparison only had dither-on footage) to isolate its actual contribution
+from the Lanczos tap-spacing issue above.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
