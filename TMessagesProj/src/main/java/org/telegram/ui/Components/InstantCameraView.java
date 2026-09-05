@@ -2350,6 +2350,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         private long videoDiff;
         private long prevVideoLast = -1;
         private long audioFirst = -1;
+        // TEMPORARY A/V drift investigation instrumentation - see FINDINGS.md. Remove together
+        // with the AVDriftProbe log lines once the drift is fixed and re-measured.
+        private boolean avDriftProbeLogged;
         private long audioLast = -1;
         private long audioLastDt = 0;
         private long prevAudioLast = -1;
@@ -2587,6 +2590,14 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             }
             sizeBudgetStartPresentationUs = -1;
             sizeBudgetBitrateRatcheted = false;
+            // TEMPORARY A/V drift investigation instrumentation - see the matching log at
+            // handleStopRecording() and FINDINGS.md's "A/V drift" sections. Remove together.
+            // PixelCameraLog (not FileLog) because it always reaches logcat under tag
+            // "PixelCamera" unconditionally - FileLog.d() logs under tag "tmessages" (not
+            // "FileLog"), which is why the first attempt at this instrumentation never showed
+            // up under an "-s FileLog:D" filter.
+            PixelCameraLog.d("AVDriftProbe start: nanoTime=" + System.nanoTime()
+                    + " elapsedRealtimeNanos=" + android.os.SystemClock.elapsedRealtimeNanos());
             AndroidUtilities.runOnUIThread(() -> {
                 NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.stopAllHeavyOperations, 512);
             });
@@ -2764,6 +2775,23 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         for (int a = input.lastWroteBuffer; a <= input.results; a++) {
                             if (a < input.results) {
                                 long totalTime = input.offset[a] - audioStartTime;
+                                // TEMPORARY A/V drift investigation instrumentation - see
+                                // FINDINGS.md's "A/V drift" sections. videoLast is stored in
+                                // nanoseconds (see the frameAvailable() assignment) but
+                                // input.offset[]/desyncTime are microseconds (audioTimestamp.nanoTime
+                                // / 1000) - the comparison below mixes units by a factor of 1000.
+                                // Logs the raw values once per recording so real data can confirm
+                                // whether the corrected (unit-consistent) comparison would have
+                                // evaluated differently than what's actually running today.
+                                if (!running && !avDriftProbeLogged) {
+                                    avDriftProbeLogged = true;
+                                    long videoLastUs = videoLast / 1000;
+                                    PixelCameraLog.d("AVDriftProbe stopCondition: audioOffsetUs=" + input.offset[a]
+                                            + " videoLastNs=" + videoLast + " videoLastUs=" + videoLastUs
+                                            + " desyncTimeUs=" + desyncTime + " totalTimeUs=" + totalTime
+                                            + " buggyCheck(offset>=videoLastNs-desync)=" + (input.offset[a] >= videoLast - desyncTime)
+                                            + " correctedCheck(offset>=videoLastUs-desync)=" + (input.offset[a] >= videoLastUs - desyncTime));
+                                }
                                 if (!running && (input.offset[a] >= videoLast - desyncTime || totalTime >= 60_000000)) {
                                     if (BuildVars.LOGS_ENABLED) {
                                         if (totalTime >= 60_000000) {
@@ -3371,6 +3399,16 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             }
             if (running && !pauseRecorder) {
                 FileLog.d("InstantCamera handleStopRecording running=false");
+                // TEMPORARY A/V drift investigation instrumentation (see FINDINGS.md's "A/V
+                // drift" sections) - remove once the drift is fixed and re-measured. Dual-clock
+                // sample lets a later log line compute whether CLOCK_BOOTTIME/CLOCK_MONOTONIC
+                // diverged over the recording; buffersToWrite.size() is the audio backlog
+                // (~42.7ms/buffer at 48kHz/2048 samples) still queued when the stop signal
+                // arrived, un-flushed into the encoder.
+                PixelCameraLog.d("AVDriftProbe stop: videoLast=" + videoLast
+                        + " nanoTime=" + System.nanoTime()
+                        + " elapsedRealtimeNanos=" + android.os.SystemClock.elapsedRealtimeNanos()
+                        + " audioBacklogBuffers=" + buffersToWrite.size());
                 sendWhenDone = send;
                 sendWhenDoneOptions = sendOptions;
                 running = false;
@@ -3669,6 +3707,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 audioFirst = -1;
                 videoFirst = -1;
                 videoLast = -1;
+                avDriftProbeLogged = false;
                 videoDiff = -1;
                 audioLast = -1;
                 audioDiff = -1;

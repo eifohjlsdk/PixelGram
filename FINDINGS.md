@@ -1514,6 +1514,117 @@ above, and now compounding it: existing installs will need a manual
 uninstall/reinstall regardless of which of the two changes actually ships
 first. Needs the same prominent callout in release notes.
 
+## A/V drift: found a likely much bigger culprit than clock-domain mismatch - a unit bug in stock upstream (2026-09-05)
+
+While building the instrumented test requested to measure how much of the
+0.43s gap is clock-rate mismatch, re-read every consumer of `videoFirst`/
+`videoLast` in `InstantCameraView` to decide exactly what to log, and found
+this: `videoFirst` is stored in **microseconds**
+(`videoFirst = timestampNanos / 1000`, `frameAvailable()`), but `videoLast`
+is stored in **raw nanoseconds** two lines later
+(`videoLast = timestampNanos;` - no `/1000`). Confirmed via `git blame` this
+is stock upstream code, unchanged since `d073b80063` (DrKLO, 2018-07-30) -
+not introduced by this fork.
+
+`handleAudioFrameAvailable`'s stop condition uses both:
+```java
+if (!running && (input.offset[a] >= videoLast - desyncTime || totalTime >= 60_000000)) {
+```
+`input.offset[a]` and `desyncTime` are both microseconds (`desyncTime =
+videoFirst - input.offset[a]`, and `input.offset[a]` comes from
+`audioTimestamp.nanoTime / 1000`) - but `videoLast` is nanoseconds, roughly
+1000x larger in magnitude than a comparable microsecond value. For any
+realistic device uptime, `videoLast - desyncTime` is enormous compared to
+`input.offset[a]`, so **this branch of the stop condition can essentially
+never evaluate true** - the "stop audio once it catches up to where video
+actually stopped" logic this line implements is silently dead code. Every
+recording actually stops audio via the *other* branch instead
+(`totalTime >= 60_000000`, the hard 60s cap, which is unit-consistent) -
+regardless of whether video's last frame landed at exactly 60.000s or
+somewhat earlier (frame-rate quantization, encoder flush timing, or an
+early user-initiated stop).
+
+This is a much more concrete, mechanistic explanation for a residual
+audio-longer-than-video gap than pure clock-domain rate mismatch: any
+audio already sitting in `buffersToWrite`'s backlog when recording is
+signaled to stop gets flushed through in full, because the intended trim
+against video's actual last timestamp never fires. `videoFirst` itself has
+no bug - every one of its consumers is unit-consistent (confirmed by
+checking all of `videoFirst`, `videoLast`, `prevVideoLast`, `videoLastDt`,
+`timestampNanos`'s other uses - `videoLast`/`prevVideoLast`/`videoLastDt`
+are used consistently as nanoseconds everywhere *except* this one
+comparison, which is why the fix below only touches this one line, not the
+field's storage).
+
+**Not yet fixed** - added instrumentation instead (see below) to confirm
+this against real data before changing behavior, per "build the
+instrumented test first." The one-line fix, once confirmed, is to compare
+`videoLast / 1000` instead of raw `videoLast` at that one site.
+
+## Instrumented dual-clock + stop-condition probe added; wrong logcat tag on first attempt (2026-09-05)
+
+Added temporary logging (tagged `AVDriftProbe`, all removable together once
+the drift is fixed and re-measured):
+- At recording start (`startRecording()`) and at the stop signal
+  (`handleStopRecording()`, the `running = false` transition): both
+  `System.nanoTime()` (`CLOCK_MONOTONIC`) and
+  `SystemClock.elapsedRealtimeNanos()` (`CLOCK_BOOTTIME`) sampled together,
+  so the delta between them can be compared at both ends of a recording -
+  if it moved, the two clocks genuinely ticked at different rates over the
+  recording; if not, rate mismatch is ruled out as a contributor.
+- At `handleStopRecording()`'s stop signal: `videoLast` and
+  `buffersToWrite.size()` (the audio backlog, in whole ~42.7ms buffers,
+  still queued and un-flushed into the encoder at the moment the stop
+  signal arrives) - a direct measure of how much trailing audio the
+  buggy-comparison theory above predicts should end up in the output.
+- At the buggy comparison site itself (`handleAudioFrameAvailable`, logged
+  once per recording): the raw audio offset, raw `videoLast` (ns), the
+  same value converted to µs, `desyncTime`, and **both** the actual
+  (buggy) check result and what the unit-corrected check would have
+  evaluated to on the exact same data - so the fix's effect on real numbers
+  is directly visible before it's ever applied.
+
+**First attempt used the wrong logcat tag and produced nothing.** Originally
+gated on `BuildVars.LOGS_ENABLED` and logged via `FileLog.d()`, with
+instructions to filter `adb logcat` on tag `FileLog` - wrong on two counts.
+`BuildVars.LOGS_ENABLED` is true on this build regardless (`DEBUG_VERSION`
+short-circuits the check), so that part wasn't the problem, but
+`FileLog.d()` logs to Android's `Log.d()` under the hardcoded tag
+`"tmessages"`, not `"FileLog"` - the class name isn't the tag. Separately,
+`FileLog` also appends every line to an on-device file
+(`getExternalFilesDir(null)/logs/<dd_MM_yyyy_HH_mm_ss>.txt`, one per app
+launch) regardless of logcat - that's where the confirming measurement
+below actually came from, read directly off the pulled recording rather
+than through logcat.
+
+**Fixed**: switched all three log calls from `FileLog.d()` to
+`PixelCameraLog.d()` (tag `"PixelCamera"`), which this same file already
+uses for its own camera diagnostics and which - unlike `FileLog.d()` -
+always calls `Log.d()` unconditionally, no `LOGS_ENABLED` gate to reason
+about. To pull these logs going forward:
+```
+adb logcat -d -s PixelCamera:D | grep AVDriftProbe
+```
+Rebuilt, and confirmed via `unzip -p ... classes10.dex | strings | grep AVDriftProbe`
+that the installed APK's dex actually contains the updated strings, rather
+than trusting a from-source assumption - the same discipline that caught
+this instrumentation's own build not having actually picked up an earlier
+source edit (see the git log for the back-and-forth: a rebuild that
+Gradle silently treated as fully up-to-date and produced a stale APK,
+resolved with `--rerun-tasks`).
+
+**Confirmed by direct measurement (read off the recording itself, not yet
+via `AVDriftProbe`'s own log line - that still needs a re-record on the
+corrected build)**: a 30-second recording measured 30.473s of audio against
+30.167s of video - audio runs 0.31s long. 905 video frames over 30.167s is
+exactly 30.0fps, so the frame rate itself is fine; the entire gap is in the
+tail. That's exactly consistent with the stop-condition-never-fires theory
+above: audio isn't drifting throughout the recording, it's failing to be
+trimmed back to video's actual last frame when recording stops. Still need
+the actual `AVDriftProbe` log line from a re-record on the corrected build
+to see the buggy-vs-corrected comparison and the backlog buffer count
+directly, rather than infer it from durations alone.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
