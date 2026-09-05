@@ -1324,6 +1324,72 @@ difference" result. Holding off on the `Camera2Session.java` change itself
 until that's confirmed feasible, per "don't ship it on by default until
 measured."
 
+## CameraX / androidx.camera: confirmed absent, no migration made (2026-09-05)
+
+Checked, no changes: grepped every `build.gradle` in the tree and every
+`.java` file under `TMessagesProj/src/main/java` for `androidx.camera` -
+zero matches. This tree's round-video path is Camera2 + a raw `MediaCodec`/
+`MediaMuxer` pipeline throughout (`Camera2Session.java`,
+`InstantCameraView.java`), with no CameraX dependency anywhere, contradicting
+whatever claim was seen elsewhere about upstream 12.10.0 already having moved
+video messages to CameraX. Per the explicit instruction, no migration was
+attempted - CameraX sits on top of Camera2, wouldn't expose anything the HAL
+doesn't already give directly, would abstract away the encoder configuration
+this fork specifically hand-tunes, and would mean rewriting the GL
+supersampling path.
+
+## A/V presentation timestamps: how each is derived, and why they aren't the same clock (2026-09-05)
+
+Investigation only - reporting the mechanism, not a fix. The 0.43s residual
+audio-longer-than-video overrun noted earlier in this file ("Result: AE
+target fps range fix") was flagged as a symptom, not resolved; this is why
+it's still open.
+
+**Video's presentation timestamp** is `SurfaceTexture.getTimestamp()`
+(`InstantCameraView`'s `frameAvailable()`, used unless it reads 0, in which
+case it falls back to a `System.nanoTime()` snapshot taken at the JNI
+callback). For Camera2, `SurfaceTexture.getTimestamp()` returns the capture
+result's `SENSOR_TIMESTAMP` - whose clock domain is declared per-device by
+`CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE`. **Checked on this
+device via `PixelCapsDump`: it's `1` (`TIMESTAMP_SOURCE_REALTIME`)** - meaning
+these timestamps are in the same domain as `SystemClock.elapsedRealtimeNanos()`
+(`CLOCK_BOOTTIME`), not arbitrary/HAL-internal.
+
+**Audio's presentation timestamp** is primarily
+`AudioRecord.getTimestamp(audioTimestamp, AudioTimestamp.TIMEBASE_MONOTONIC)`
+(`InstantCameraView`'s audio-recording thread), falling back to a raw
+`System.nanoTime()` snapshot only if `getTimestamp()` throws.
+`TIMEBASE_MONOTONIC` is Android's documented `CLOCK_MONOTONIC` - the same
+domain `System.nanoTime()` itself uses.
+
+**So on this device, the two tracks are timestamped from two different
+clock domains**: video from `CLOCK_BOOTTIME` (via the sensor), audio from
+`CLOCK_MONOTONIC` (via the audio HAL's own frame-position clock, or the app
+processor's clock as fallback). Both tick at the same nominal rate and
+normally only differ by however long the device has spent asleep since
+boot - which shouldn't matter mid-recording with the screen on throughout -
+but Android doesn't guarantee they progress at identically matched rates
+against each other, since they're ultimately serviced by independent
+timer/counter paths (CPU timer vs. audio codec's own clock domain feeding
+the HAL's frame-position tracking).
+
+The code already shows awareness of a start-of-recording mismatch: the first
+audio buffer whose timestamp is more than 10ms off from the first video
+frame's triggers a one-time `desyncTime = videoFirst - input.offset[a]`
+correction, applied as a constant offset to every subsequent audio
+timestamp (`handleAudioFrameAvailable`, and the `videoLast - desyncTime` stop
+condition). **That's an origin correction, not a rate correction** - it
+aligns where the two timelines start, but can't compensate for the two
+clocks running at even very slightly different rates over the following
+~60 seconds. A 0.43s gap over ~60s is about 0.7% - large for pure
+crystal-oscillator drift between two clock domains on the same SoC, which
+points toward this being at least partly an accounting/rate-model issue
+in how elapsed time is computed rather than pure hardware clock drift, but
+distinguishing "clock-domain rate mismatch" from "another bug in the
+alignment/stop-condition logic" needs an instrumented recording (logging
+both raw timestamp sources per frame across a full 60s clip) that wasn't
+part of this investigation.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
