@@ -2661,3 +2661,22 @@ distance to cover to reach its target from CAMCORDER's higher starting point
 than it did from MIC/DEFAULT's quieter one, which should make convergence
 even easier on top of the leveler-timing fix below, not a competing factor.
 
+## Leveler defaults retuned for round video's actual clip length: 1.0s/4.0s -> 0.4s/1.2s (2026-09-05)
+
+Per the "Leveler timing" report above (a 4.0s release constant left a
+typical 8-15s clip only 86.5%-97.6% converged to target), changed
+`DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC`/`DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC`
+from 1.0s/4.0s to 0.4s/1.2s. At 1.2s release, convergence reaches 99.9% by
+8s into a clip - essentially complete across the whole 8-15s range, closing
+out the duration-tracking problem directly. The tradeoff: this sits closer
+to typical speech-pause timescales than a more conservative choice would
+(1.2x a ~1s sentence gap, 4x a ~0.3s word gap) - a smaller safety margin
+against audibly following a long natural pause than, say, 2.5s release
+would have carried (which would have given a 2.5x/8x margin at the cost of
+only reaching ~96% convergence by 8s). Chosen anyway, prioritizing full
+convergence within round video's actual clip lengths over maximum pumping
+headroom. Both values remain user-adjustable via the settings added above;
+not yet measured against a real recording at these new defaults - the next
+on-device comparison (CAMCORDER + these constants vs. the iPhone) will show
+whether the audio gap narrows as expected or whether pumping becomes
+audible at this setting.

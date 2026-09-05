@@ -278,15 +278,22 @@ public class PixelGramSettings {
     // (comfortable headroom under the -3dBFS peak ceiling); adjustable per request.
     public static final float DEFAULT_ADAPTIVE_GAIN_TARGET_DB = -20f;
     public static final float[] ADAPTIVE_GAIN_TARGET_DB_VALUES = {-30f, -27f, -24f, -21f, -20f, -18f, -15f, -12f};
-    // Slow-leveler attack/release, in seconds - defaults match AdaptiveGainProcessor's original
-    // hardcoded constants exactly, so leaving these untouched changes nothing. See the 2026-09-05
-    // pumping-vs-convergence report in FINDINGS.md: shorter values converge within a typical clip
-    // but audibly chase syllable-rate loudness swings; these ranges bracket that tradeoff rather
-    // than picking a single "correct" point.
-    public static final float DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC = 1.0f;
-    public static final float DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC = 4.0f;
-    public static final float[] ADAPTIVE_GAIN_SLOW_ATTACK_SEC_VALUES = {0.2f, 0.5f, 1.0f, 2.0f};
-    public static final float[] ADAPTIVE_GAIN_SLOW_RELEASE_SEC_VALUES = {0.5f, 1.0f, 2.0f, 4.0f, 8.0f};
+    // Slow-leveler attack/release, in seconds. Defaults retuned (2026-09-05, see FINDINGS.md's
+    // "Leveler timing" report) from the original 1.0s/4.0s, which were sized for continuous audio
+    // and left a typical 8-15s round-video clip only 86.5%-97.6% converged toward the target by
+    // the time recording stopped - the achieved level tracked clip duration rather than settling
+    // on the configured target. 1.2s release reaches 99.9% of target by 8s (essentially complete
+    // for the whole 8-15s range), at the cost of a tighter margin over typical speech-pause
+    // timescales than a more conservative value would give (1.2x a ~1s sentence gap, 4x a ~0.3s
+    // word gap - noticeably closer than the 2.5x/4x margins a slower constant would carry), so
+    // this trades more convergence certainty for less headroom against audible pumping on a long
+    // natural pause. 0.4s attack (governs the "already too loud" direction, not the bottleneck)
+    // tightened to match. Still adjustable - these aren't claimed to be a single provably-correct
+    // point, just the chosen tradeoff.
+    public static final float DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC = 0.4f;
+    public static final float DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC = 1.2f;
+    public static final float[] ADAPTIVE_GAIN_SLOW_ATTACK_SEC_VALUES = {0.2f, 0.4f, 0.5f, 1.0f, 2.0f};
+    public static final float[] ADAPTIVE_GAIN_SLOW_RELEASE_SEC_VALUES = {0.5f, 1.0f, 1.2f, 2.0f, 4.0f, 8.0f};
     public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
     // Off as of 1.0.2: the three-way comparison in FINDINGS.md found the bandpass/gate chain adds
