@@ -97,6 +97,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int echoCancellationRow;
     private int adaptiveGainRow;
     private int adaptiveGainTargetRow;
+    private int adaptiveGainAttackRow;
+    private int adaptiveGainReleaseRow;
     private int micGainRow;
     // Separate row/setting from micGainRow (round video) - see PixelGramSettings.
     // DEFAULT_MIC_GAIN_VOICE_MESSAGE's doc for why these aren't shared.
@@ -178,6 +180,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
         echoCancellationRow = rowCount++;
         adaptiveGainRow = rowCount++;
         adaptiveGainTargetRow = rowCount++;
+        adaptiveGainAttackRow = rowCount++;
+        adaptiveGainReleaseRow = rowCount++;
         micGainRow = rowCount++;
         micGainVoiceMessageRow = rowCount++;
         micDirectionRow = rowCount++;
@@ -290,11 +294,21 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 // target-level row - see AdaptiveGainProcessor's class doc for the "on replaces
                 // the fixed multiply entirely" relationship this reflects.
                 listAdapter.notifyItemChanged(adaptiveGainTargetRow);
+                listAdapter.notifyItemChanged(adaptiveGainAttackRow);
+                listAdapter.notifyItemChanged(adaptiveGainReleaseRow);
                 listAdapter.notifyItemChanged(micGainRow);
                 listAdapter.notifyItemChanged(micGainVoiceMessageRow);
             } else if (position == adaptiveGainTargetRow) {
                 if (PixelGramSettings.isAdaptiveGainEnabled()) {
                     showAdaptiveGainTargetDialog();
+                }
+            } else if (position == adaptiveGainAttackRow) {
+                if (PixelGramSettings.isAdaptiveGainEnabled()) {
+                    showAdaptiveGainAttackDialog();
+                }
+            } else if (position == adaptiveGainReleaseRow) {
+                if (PixelGramSettings.isAdaptiveGainEnabled()) {
+                    showAdaptiveGainReleaseDialog();
                 }
             } else if (position == micGainRow) {
                 if (!PixelGramSettings.isAdaptiveGainEnabled()) {
@@ -643,6 +657,36 @@ public class PixelGramSettingsActivity extends BaseFragment {
         showDialog(builder.create());
     }
 
+    private void showAdaptiveGainAttackDialog() {
+        float[] values = PixelGramSettings.ADAPTIVE_GAIN_SLOW_ATTACK_SEC_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            options[i] = formatSeconds(values[i]) + (values[i] == PixelGramSettings.DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Adaptive Gain Attack Time");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setAdaptiveGainSlowAttackSec(values[which]);
+            listAdapter.notifyItemChanged(adaptiveGainAttackRow);
+        });
+        showDialog(builder.create());
+    }
+
+    private void showAdaptiveGainReleaseDialog() {
+        float[] values = PixelGramSettings.ADAPTIVE_GAIN_SLOW_RELEASE_SEC_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            options[i] = formatSeconds(values[i]) + (values[i] == PixelGramSettings.DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Adaptive Gain Release Time");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setAdaptiveGainSlowReleaseSec(values[which]);
+            listAdapter.notifyItemChanged(adaptiveGainReleaseRow);
+        });
+        showDialog(builder.create());
+    }
+
     private interface IntSetter {
         void set(int value);
     }
@@ -839,6 +883,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return String.format(Locale.US, "%.0f dB", db);
     }
 
+    private static String formatSeconds(float seconds) {
+        return String.format(Locale.US, "%.1fs", seconds);
+    }
+
     private static String speechEnhancementName(int mode) {
         switch (mode) {
             case PixelGramSettings.SPEECH_ENHANCEMENT_RNNOISE: return "RNNoise";
@@ -913,6 +961,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == echoCancellationRow && AcousticEchoCanceler.isAvailable())
                     || pos == adaptiveGainRow
                     || (pos == adaptiveGainTargetRow && PixelGramSettings.isAdaptiveGainEnabled())
+                    || (pos == adaptiveGainAttackRow && PixelGramSettings.isAdaptiveGainEnabled())
+                    || (pos == adaptiveGainReleaseRow && PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == micGainRow && !PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == micGainVoiceMessageRow && !PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == micDirectionRow && PixelGramSettings.isMicDirectionSupported())
@@ -1003,6 +1053,14 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     } else if (position == adaptiveGainTargetRow) {
                         boolean enabled = PixelGramSettings.isAdaptiveGainEnabled();
                         cell.setTextAndValue("Adaptive Gain Target" + (enabled ? "" : " (enable Adaptive Gain)"), formatGateThreshold(PixelGramSettings.getAdaptiveGainTargetDb()) + " RMS", true);
+                        cell.setAlpha(enabled ? 1f : DISABLED_ROW_ALPHA);
+                    } else if (position == adaptiveGainAttackRow) {
+                        boolean enabled = PixelGramSettings.isAdaptiveGainEnabled();
+                        cell.setTextAndValue("Adaptive Gain Attack Time" + (enabled ? "" : " (enable Adaptive Gain)"), formatSeconds(PixelGramSettings.getAdaptiveGainSlowAttackSec()), true);
+                        cell.setAlpha(enabled ? 1f : DISABLED_ROW_ALPHA);
+                    } else if (position == adaptiveGainReleaseRow) {
+                        boolean enabled = PixelGramSettings.isAdaptiveGainEnabled();
+                        cell.setTextAndValue("Adaptive Gain Release Time" + (enabled ? "" : " (enable Adaptive Gain)"), formatSeconds(PixelGramSettings.getAdaptiveGainSlowReleaseSec()), true);
                         cell.setAlpha(enabled ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == micGainRow) {
                         boolean adaptive = PixelGramSettings.isAdaptiveGainEnabled();

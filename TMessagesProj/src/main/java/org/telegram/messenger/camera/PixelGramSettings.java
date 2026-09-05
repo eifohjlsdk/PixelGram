@@ -134,6 +134,13 @@ public class PixelGramSettings {
     // multiplier outright when enabled - see AdaptiveGainProcessor's class doc.
     private static final String KEY_ADAPTIVE_GAIN_ENABLED = "adaptive_gain_enabled";
     private static final String KEY_ADAPTIVE_GAIN_TARGET_DB = "adaptive_gain_target_db";
+    // Slow-leveler time constants, adjustable per the 2026-09-05 pumping-vs-convergence report
+    // (see FINDINGS.md): the 1.0s/4.0s defaults below don't fully converge within a typical
+    // 8-10s round-video clip, but shortening them trades that away for audible envelope-following
+    // ("pumping") at conversational speech's own syllable/word-gap timescale - there's no value
+    // that's simply better, so this is exposed for the user to compare rather than picked for them.
+    private static final String KEY_ADAPTIVE_GAIN_SLOW_ATTACK_SEC = "adaptive_gain_slow_attack_sec";
+    private static final String KEY_ADAPTIVE_GAIN_SLOW_RELEASE_SEC = "adaptive_gain_slow_release_sec";
     private static final String KEY_MIC_DIRECTION_MODE = "mic_direction_mode";
     private static final String KEY_MIC_FIELD_DIMENSION = "mic_field_dimension";
     private static final String KEY_VOICE_ISOLATION_MODE = "voice_isolation_mode";
@@ -270,6 +277,15 @@ public class PixelGramSettings {
     // (comfortable headroom under the -3dBFS peak ceiling); adjustable per request.
     public static final float DEFAULT_ADAPTIVE_GAIN_TARGET_DB = -20f;
     public static final float[] ADAPTIVE_GAIN_TARGET_DB_VALUES = {-30f, -27f, -24f, -21f, -20f, -18f, -15f, -12f};
+    // Slow-leveler attack/release, in seconds - defaults match AdaptiveGainProcessor's original
+    // hardcoded constants exactly, so leaving these untouched changes nothing. See the 2026-09-05
+    // pumping-vs-convergence report in FINDINGS.md: shorter values converge within a typical clip
+    // but audibly chase syllable-rate loudness swings; these ranges bracket that tradeoff rather
+    // than picking a single "correct" point.
+    public static final float DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC = 1.0f;
+    public static final float DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC = 4.0f;
+    public static final float[] ADAPTIVE_GAIN_SLOW_ATTACK_SEC_VALUES = {0.2f, 0.5f, 1.0f, 2.0f};
+    public static final float[] ADAPTIVE_GAIN_SLOW_RELEASE_SEC_VALUES = {0.5f, 1.0f, 2.0f, 4.0f, 8.0f};
     public static final int DEFAULT_MIC_DIRECTION_MODE = MIC_DIRECTION_OFF;
     public static final float DEFAULT_MIC_FIELD_DIMENSION = 0.5f;
     // Off as of 1.0.2: the three-way comparison in FINDINGS.md found the bandpass/gate chain adds
@@ -527,6 +543,22 @@ public class PixelGramSettings {
 
     public static void setAdaptiveGainTargetDb(float db) {
         prefs().edit().putFloat(KEY_ADAPTIVE_GAIN_TARGET_DB, db).apply();
+    }
+
+    public static float getAdaptiveGainSlowAttackSec() {
+        return prefs().getFloat(KEY_ADAPTIVE_GAIN_SLOW_ATTACK_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC);
+    }
+
+    public static void setAdaptiveGainSlowAttackSec(float seconds) {
+        prefs().edit().putFloat(KEY_ADAPTIVE_GAIN_SLOW_ATTACK_SEC, seconds).apply();
+    }
+
+    public static float getAdaptiveGainSlowReleaseSec() {
+        return prefs().getFloat(KEY_ADAPTIVE_GAIN_SLOW_RELEASE_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC);
+    }
+
+    public static void setAdaptiveGainSlowReleaseSec(float seconds) {
+        prefs().edit().putFloat(KEY_ADAPTIVE_GAIN_SLOW_RELEASE_SEC, seconds).apply();
     }
 
     private static float micGainMultiplierForMode(int mode) {
@@ -805,6 +837,8 @@ public class PixelGramSettings {
                 .putInt(KEY_MIC_GAIN_VOICE_MESSAGE, DEFAULT_MIC_GAIN_VOICE_MESSAGE)
                 .putBoolean(KEY_ADAPTIVE_GAIN_ENABLED, DEFAULT_ADAPTIVE_GAIN)
                 .putFloat(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB)
+                .putFloat(KEY_ADAPTIVE_GAIN_SLOW_ATTACK_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC)
+                .putFloat(KEY_ADAPTIVE_GAIN_SLOW_RELEASE_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC)
                 .putInt(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE)
                 .putFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION)
                 .putInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE)

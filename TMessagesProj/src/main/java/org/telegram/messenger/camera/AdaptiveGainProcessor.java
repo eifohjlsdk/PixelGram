@@ -58,9 +58,13 @@ public class AdaptiveGainProcessor {
 
     // Slow leveler time constants - asymmetric on purpose. Reacts to "too loud" faster than to
     // "too quiet" so a hot passage gets reined in reasonably promptly, but a brief pause doesn't
-    // get amplified (and then overshoot) before the next word arrives.
-    private static final float SLOW_ATTACK_SEC = 1.0f;
-    private static final float SLOW_RELEASE_SEC = 4.0f;
+    // get amplified (and then overshoot) before the next word arrives. Adjustable (see
+    // PixelGramSettings.getAdaptiveGainSlowAttackSec/getAdaptiveGainSlowReleaseSec) - read live
+    // from settings every buffer, same "read live, don't cache" convention as the rest of this
+    // package, rather than fixed constants: the 1.0s/4.0s originals don't fully converge within a
+    // typical 8-10s round-video clip (see FINDINGS.md's 2026-09-05 leveler-timing report), but
+    // shortening them costs audible pumping at syllable/word-gap timescale, so this is exposed for
+    // the user to compare rather than hardcoded to one point on that tradeoff.
 
     // Fast limiter time constants - classic look-ahead-limiter ballistics: near-instant
     // reduction, a release slow enough not to visibly (audibly) pump right after a peak.
@@ -144,8 +148,10 @@ public class AdaptiveGainProcessor {
             float targetDb = PixelGramSettings.getAdaptiveGainTargetDb();
             float neededGainDb = targetDb - blockRmsDb;
             float elapsedSec = sampleCount / (float) sampleRate;
-            float coef = timeConstantToCoefForDuration(
-                    neededGainDb < slowGainDb ? SLOW_ATTACK_SEC : SLOW_RELEASE_SEC, elapsedSec);
+            float timeConstant = neededGainDb < slowGainDb
+                    ? PixelGramSettings.getAdaptiveGainSlowAttackSec()
+                    : PixelGramSettings.getAdaptiveGainSlowReleaseSec();
+            float coef = timeConstantToCoefForDuration(timeConstant, elapsedSec);
             slowGainDb += coef * (neededGainDb - slowGainDb);
         }
         if (slowGainDb > GAIN_MAX_DB) slowGainDb = GAIN_MAX_DB;

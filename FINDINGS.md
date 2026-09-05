@@ -2570,3 +2570,53 @@ this second fix landed, so they reflect the width-ratio-only V-pass
 weights, not this correction. Whether this made a measurable difference
 on the `1920x1080` case would need one more recording to confirm.
 
+## Leveler timing: pumping cost reported; attack/release made adjustable (2026-09-05)
+
+**Why RMS tracked clip duration (flagged in the first audio comparison,
+investigated here as requested):** `AdaptiveGainProcessor`'s slow leveler
+is a one-pole filter; a one-pole filter closes a fraction
+`1 - e^(-t/T)` of the remaining gap after `t` seconds against time constant
+`T`. At the shipped release constant (`T=4.0s`), an 8-second clip - typical
+for a round video - only reaches `1 - e^(-8/4) = 86.5%` of the way to
+target by the time recording stops, starting from 0dB (1x) at the start of
+every fresh recording since there's no prior state to carry over. A 4-second
+clip would only reach 63%. This directly explains the observed pattern:
+longer clips measured closer to the -15dBFS target, shorter ones measured
+further off, because none of them ran long enough to fully converge.
+
+**What faster constants would cost:** the leveler's job (per its own class
+doc) is to track *sustained* loudness - a different speaker, a change in
+distance from the mic, a room change - while riding through normal
+speech dynamics (word/sentence pauses, natural pitch and emphasis
+variation, breaths) without following them. Ordinary conversational speech
+has pauses on the order of 100-300ms between words and 300ms-1s between
+sentences; a release time constant faster than roughly that range starts
+to treat those normal gaps as material to release toward, producing
+audible "pumping" - the perceived loudness swelling after a pause and
+dipping during a stressed syllable, in sync with the rhythm of speech
+rather than staying settled for the whole utterance. This is precisely the
+distinction between a leveler/AGC (slow, tracks sustained level) and a
+compressor (fast, shapes syllable-to-syllable dynamics) - this class
+already has a separate fast component (`limiterGainDb`, 5ms/100ms) doing
+the compressor-like job of catching peaks; speeding up the *slow* leveler
+to compensate for short clips would blur that distinction and take on
+compression's characteristic artefact without gaining a compressor's
+intentional loudness-shaping benefit. There is no value that's simply
+better: shorter constants converge more reliably within a typical clip
+length at the cost of more audible envelope-following; longer constants
+sound more natural on sustained speech at the cost of not converging
+within short clips. This is a real, unavoidable tradeoff, not something to
+tune away by picking one number.
+
+**Made adjustable rather than picking a value**, per request:
+`PixelGramSettings.getAdaptiveGainSlowAttackSec()`/
+`getAdaptiveGainSlowReleaseSec()` (defaults 1.0s/4.0s, exactly matching the
+prior hardcoded constants, so leaving them untouched changes nothing),
+surfaced as two new settings rows under Adaptive Gain (greyed out to match
+the existing target-level row's pattern when Adaptive Gain is off), each
+offering a small set of values to compare (attack: 0.2/0.5/1.0/2.0s;
+release: 0.5/1.0/2.0/4.0/8.0s). `AdaptiveGainProcessor` now reads both live
+from settings once per buffer rather than from fixed constants, same
+"read live, don't cache" convention the rest of this package already
+follows. Not yet tested against real recordings at non-default values -
+that's the next thing to try once this reaches a device.
