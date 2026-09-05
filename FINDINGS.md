@@ -1788,6 +1788,52 @@ above is left as the leading unconfirmed explanation, recorded with what
 would be needed to test it, for anyone who wants to pick it up later** -
 not pursued further in this pass.
 
+## Declared-dimension self-check added before sending (2026-09-05)
+
+The earlier "declared dimensions wrong" bug (see that section above) was
+completely silent until someone happened to look at the rendered circle -
+`resultWidth`/`resultHeight` disagreeing with what was actually muxed
+produced a black rim on Android and a square fallback on iOS, with nothing
+in logs or on the sending device to say why. Added a guard so a repeat of
+that class of bug can't be silent again.
+
+`InstantCameraView.verifyDeclaredDimensions(videoFile, expectedWidth,
+expectedHeight)` runs once per recording, right after `mediaMuxer.finishMovie()`
+has completed and right before `resultWidth`/`resultHeight` get set on the
+`VideoEditedInfo` that's about to be sent. It reads the *actual* finalized
+file's own container metadata via `MediaMetadataRetriever`
+(`METADATA_KEY_VIDEO_WIDTH`/`_HEIGHT` - fast, just the moov atom, not a
+frame decode) and compares it against what's about to be declared. On a
+mismatch it logs loudly via `PixelCameraLog.w` with both value pairs and the
+file path, unconditionally (not gated behind debug logging) so it survives
+into a normal build.
+
+**Chose to log loudly rather than block the send.** Round video's only
+delivery path shouldn't fail outright on this check's own possible false
+positive (a `MediaMetadataRetriever` quirk on some untested device/codec) -
+but a real mismatch must never be silent again either. If a mismatch is
+ever actually seen in practice, revisit whether it should hard-block
+instead.
+
+Runs synchronously on the UI thread (same thread the surrounding
+`resultWidth`/`resultHeight` assignment already runs on) - accepted the
+small one-time latency since round-video files are short and
+`MediaMetadataRetriever`'s basic metadata extraction only parses the header,
+not the frame data.
+
+Only added at the one call site where the file is guaranteed fully
+finalized (after `finishMovie()`, in the "send after full local finalize"
+path) - not at the other two `resultWidth`/`resultHeight` assignment sites
+in this file, which either run against a file that may still be
+progressively writing (`notReadyYet`/`allowSendingWhileRecording`) or are a
+preview-only path, where a `MediaMetadataRetriever` read could itself give
+a misleading result against an incomplete file.
+
+Verified via `:TMessagesProj_App:compileAfatDebugJavaWithJavac`; not yet
+exercised against an actual mismatch (there isn't one to reproduce right
+now - this is a guard against a *future* regression, not a fix for a
+current bug).
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>

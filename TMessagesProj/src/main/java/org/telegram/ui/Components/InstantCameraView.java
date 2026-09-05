@@ -3539,6 +3539,14 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         videoEditedInfo.resultWidth = videoEditedInfo.originalWidth = videoWidth;
                         videoEditedInfo.resultHeight = videoEditedInfo.originalHeight = videoHeight;
                         videoEditedInfo.originalPath = videoFile.getAbsolutePath();
+                        // Self-check against a repeat of the declared-dimension bug (FINDINGS.md's
+                        // "declared dimensions wrong" section): that bug was exactly this - the
+                        // declared TL_documentAttributeVideo.w/h silently disagreeing with what was
+                        // actually muxed - and it was completely silent until someone happened to
+                        // look at the rendered circle. mediaMuxer.finishMovie() has already run by
+                        // this point, so videoFile's own container metadata reflects what was
+                        // actually encoded, independent of whatever these in-memory fields say.
+                        verifyDeclaredDimensions(videoFile, videoWidth, videoHeight);
                         final VideoEditedInfo info = videoEditedInfo;
                         if (send == ENCODER_SEND_SEND) {
                             if (delegate.isInScheduleMode()) {
@@ -4070,6 +4078,47 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                         + "s exceeds the safe budget (" + PixelGramSettings.ROUND_VIDEO_SAFE_MAX_BYTES + "B) - ratcheted live bitrate from " + videoBitrate + " to " + newVideoBitrate);
             } catch (Exception e) {
                 FileLog.e(e);
+            }
+        }
+
+        // Guards against a repeat of the declared-dimension bug (FINDINGS.md's "declared
+        // dimensions wrong" section) - reads back the finalized file's own container metadata via
+        // MediaMetadataRetriever (fast: just the moov atom, not a frame decode) and compares
+        // against what's about to be declared to the protocol. A mismatch here means some future
+        // edit has reintroduced exactly the class of bug that caused a black rim on Android and a
+        // square-fallback on iOS, and would otherwise be silent until someone happened to look.
+        // Logs loudly rather than blocking the send - round video's only delivery path shouldn't
+        // fail outright on this check's own possible false positive (retriever quirks on some
+        // device, a codec this hasn't been tested against), but a real mismatch must never be
+        // silent again either.
+        private void verifyDeclaredDimensions(File videoFile, int expectedWidth, int expectedHeight) {
+            android.media.MediaMetadataRetriever retriever = new android.media.MediaMetadataRetriever();
+            try {
+                retriever.setDataSource(videoFile.getAbsolutePath());
+                String widthStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                String heightStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+                if (widthStr == null || heightStr == null) {
+                    PixelCameraLog.w("verifyDeclaredDimensions: retriever returned no video dimensions for " + videoFile.getAbsolutePath() + " - skipping check");
+                    return;
+                }
+                int actualWidth = Integer.parseInt(widthStr);
+                int actualHeight = Integer.parseInt(heightStr);
+                if (actualWidth != expectedWidth || actualHeight != expectedHeight) {
+                    PixelCameraLog.w("DECLARED-DIMENSION MISMATCH: muxed file " + videoFile.getAbsolutePath()
+                            + " actually contains " + actualWidth + "x" + actualHeight
+                            + " but " + expectedWidth + "x" + expectedHeight + " is about to be declared"
+                            + " (TL_documentAttributeVideo.w/h) - this is the same bug class as the black-rim/"
+                            + "square-fallback regression documented in FINDINGS.md. The sent video will render wrong.");
+                } else {
+                    PixelCameraLog.d("verifyDeclaredDimensions: OK, " + actualWidth + "x" + actualHeight + " matches what's being declared");
+                }
+            } catch (Exception e) {
+                PixelCameraLog.w("verifyDeclaredDimensions: check itself failed for " + videoFile.getAbsolutePath() + " - " + e);
+            } finally {
+                try {
+                    retriever.release();
+                } catch (Exception ignore) {
+                }
             }
         }
 
