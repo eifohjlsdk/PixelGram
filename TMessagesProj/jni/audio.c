@@ -306,6 +306,20 @@ int initRecorder(const char *path, opus_int32 sampleRate, int application, opus_
 
     coding_rate = sampleRate;
     rate = sampleRate;
+
+    // application and bitrateBps ultimately come from PixelGramSettings (a SharedPreferences
+    // int), which the settings UI only ever writes from a fixed set of known-good values - but
+    // that's a Java-side promise, not a native-side guarantee (a tampered/corrupted prefs file
+    // is user-writable on a rooted device without touching the app at all). Validate here rather
+    // than hand an arbitrary int straight to opus_encoder_ctl.
+    if (application != OPUS_APPLICATION_VOIP && application != OPUS_APPLICATION_AUDIO && application != OPUS_APPLICATION_RESTRICTED_LOWDELAY) {
+        LOGE("initRecorder: invalid opus application %d, falling back to OPUS_APPLICATION_AUDIO", application);
+        application = OPUS_APPLICATION_AUDIO;
+    }
+    if (bitrateBps != OPUS_AUTO && bitrateBps != OPUS_BITRATE_MAX && (bitrateBps < 500 || bitrateBps > 512000)) {
+        LOGE("initRecorder: invalid opus bitrate %d, clamping to [500, 512000]", bitrateBps);
+        bitrateBps = MAX(500, MIN(512000, bitrateBps));
+    }
     opus_application = application;
     opus_bitrate = bitrateBps;
 
@@ -597,13 +611,29 @@ JNIEXPORT jint Java_org_telegram_messenger_MediaController_startRecord(JNIEnv *e
     return result;
 }
 
+// Both writeFrame*() JNI entry points below are defense in depth against a Java-side miscount:
+// len is caller-supplied and must never be trusted past what the buffer itself reports it can
+// hold, regardless of what MediaController's own bookkeeping intends to pass.
 JNIEXPORT jint Java_org_telegram_messenger_MediaController_writeFrame(JNIEnv *env, jclass class, jobject frame, jint len) {
+    if (frame == NULL || len <= 0) return 0;
+    jlong capacity = (*env)->GetDirectBufferCapacity(env, frame);
+    if (capacity <= 0 || (jlong) len > capacity) return 0;
     jbyte *frameBytes = (*env)->GetDirectBufferAddress(env, frame);
+    if (frameBytes == NULL) return 0;
     return writeFrame((uint8_t *) frameBytes, (uint32_t) len, len / 2 < frame_size);
 }
 
 JNIEXPORT jint Java_org_telegram_messenger_MediaController_writeFrameFloat(JNIEnv *env, jclass class, jobject frame, jint len) {
+    if (frame == NULL || len <= 0) return 0;
+    jlong capacity = (*env)->GetDirectBufferCapacity(env, frame);
+    if (capacity <= 0 || (jlong) len > capacity) return 0;
+    if (len % 4 != 0) {
+        // Not a memory-safety issue (the /4 below truncates harmlessly) but a real miscount
+        // somewhere upstream - every caller in this tree hands us whole float32 samples.
+        LOGE("writeFrameFloat: len=%d is not a multiple of 4, truncating", len);
+    }
     jbyte *frameBytes = (*env)->GetDirectBufferAddress(env, frame);
+    if (frameBytes == NULL) return 0;
     uint32_t sampleCount = (uint32_t) len / 4;
     return writeFrameFloat((float *) frameBytes, sampleCount, sampleCount < frame_size);
 }

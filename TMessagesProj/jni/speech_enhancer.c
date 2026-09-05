@@ -52,6 +52,17 @@ JNIEXPORT void JNICALL Java_org_telegram_messenger_camera_SpeechEnhancer_nativeP
     if (handle == 0) return;
     DenoiseState *st = (DenoiseState *) (intptr_t) handle;
 
+    if (buffer == NULL || offsetFloats < 0) return;
+
+    // Defense in depth: never trust the caller's offset alone. A Java-side miscount (or any
+    // future caller that doesn't respect SpeechEnhancer's own bookkeeping) must not turn into
+    // an out-of-bounds native write - GetDirectBufferCapacity() is the only source of truth for
+    // how large this buffer actually is, independent of whatever offsetFloats claims.
+    jlong capacityBytes = (*env)->GetDirectBufferCapacity(env, buffer);
+    if (capacityBytes <= 0) return;
+    jlong capacityFloats = capacityBytes / (jlong) sizeof(float);
+    if ((jlong) offsetFloats + SPEECH_ENHANCER_FRAME_SIZE > capacityFloats) return;
+
     float *base = (float *) (*env)->GetDirectBufferAddress(env, buffer);
     if (base == NULL) return;
     float *samples = base + offsetFloats;

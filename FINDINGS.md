@@ -1152,6 +1152,44 @@ ID and both potential collisions. Verified via
   account-picker/sync behavior between the two apps. Left alone since it's
   outside what was asked and isn't a regression introduced by this change.
 
+## Native bounds checks on caller-supplied audio buffer offsets/lengths (2026-09-05)
+
+`SpeechEnhancer.nativeProcessFrame` (`speech_enhancer.c`) took a direct
+`ByteBuffer` and a caller-supplied `offsetFloats`, then read/wrote 480 floats
+at that offset with only a NULL check on `GetDirectBufferAddress` - no check
+that `offsetFloats + 480` actually fit inside the buffer. A Java-side
+miscount would have turned into an out-of-bounds native read/write rather
+than a catchable exception. Fixed by adding `GetDirectBufferCapacity` and a
+bounds check (`offsetFloats < 0` or `offsetFloats + 480 > capacity` both
+bail out before touching the buffer).
+
+Same category of issue in `audio.c`'s `writeFrame`/`writeFrameFloat` JNI
+entry points: no capacity check against the caller-supplied `len`, and no
+NULL check on `GetDirectBufferAddress`'s result before use. Added both. Also
+added a log (not a bounds issue - the `/4` truncation is arithmetically
+safe) when `len` isn't a multiple of 4 in `writeFrameFloat`, since every
+real caller in this tree only ever hands over whole float32 samples and a
+non-multiple would mean something upstream miscounted.
+
+`initRecorder` also took the new `application`/`bitrateBps` parameters
+(added for the Opus reconfiguration above) straight from
+`PixelGramSettings` and passed them directly to `opus_encoder_ctl` with no
+validation. The settings UI only ever writes one of a fixed set of known
+values, but that's a Java-side promise, not a native-side guarantee - a
+tampered or corrupted SharedPreferences file (writable on a rooted device
+without touching the app itself) would reach native code unchecked.
+`initRecorder` now falls back to `OPUS_APPLICATION_AUDIO` for any
+`application` value other than the three libopus defines, and clamps
+`bitrateBps` into `[500, 512000]` (leaving `OPUS_AUTO`/`OPUS_BITRATE_MAX`
+untouched, since those are valid sentinel values outside that range),
+logging when either happens.
+
+Verified the native changes compile cleanly
+(`:TMessagesProj_App:assembleAfatDebug`); no behavioral test beyond that, since
+every existing call site already passes in-bounds, valid values - these are
+defense-in-depth checks against future/tampered callers, not fixes to an
+observed bug.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
