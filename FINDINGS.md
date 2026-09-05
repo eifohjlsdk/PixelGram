@@ -2754,3 +2754,30 @@ release causes audible pumping specifically after a mid-recording pause**,
 since it contains one continuous phrase with no internal gap long enough
 to trigger a silence-freeze/re-attack cycle - confirming that specifically
 would need a take with a deliberate pause of a second or more mid-sentence.
+
+## Dither default moved to off: the earlier "2x looked better" impression is now suspect (2026-09-05)
+
+Changed `PixelGramSettings.DEFAULT_DITHER_AMOUNT_LSB` from 1x to 0 (off),
+applying the recommendation from the shipping-defaults review above.
+
+**Why the earlier preference for more dither is suspect, not just
+unconfirmed.** The original A/B that favored dither (see "Downscale
+filter, dither, resolution/bitrate options") and this session's own
+pre-fix baseline (dither 2x measuring *higher* Laplacian variance than
+off) were both taken while the supersample downscale had the tap-spacing
+bug - undersampling roughly two-thirds of the source pixels within its own
+nominal kernel support. Under that condition, the signal reaching the
+encoder was already losing real detail to a lossy downscale; injecting
+dither noise on top of an already-detail-poor signal can read as added
+"texture" perceptually and even nudge a variance-based sharpness metric
+upward, without any of it being genuine resolved detail. Once the
+downscale actually samples correctly (post tap-spacing-fix, post per-axis
+fix), that mechanism doesn't apply the same way - dither is just noise
+added to a signal that's no longer starved for real detail, so it should
+measure as pure cost (bits the encoder spends carrying noise) rather than
+an apparent quality gain. This isn't a confirmed re-test of dither on the
+now-correct kernel across all three levels (only 2x has been recorded
+post-per-axis-fix, and not compared against 0x/1x on that same build) -
+it's a reason to distrust the *old* evidence, not a new measurement
+proving dither is actively harmful. Off until there's a clean, correctly-
+filtered A/B to justify turning it back on.

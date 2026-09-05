@@ -314,11 +314,16 @@ public class PixelGramSettings {
     // enhancement section.
     public static final float DEFAULT_SPEECH_ENHANCEMENT_WET = 0.8f;
     public static final int DEFAULT_DOWNSCALE_FILTER = DOWNSCALE_FILTER_LANCZOS;
-    // In multiples of 1/255 (one 8-bit LSB), applied as +-0.5x this value. 0 = off. Matches what
-    // shipped without a setting (1x = +-0.5 LSB) as the default so existing recordings don't
-    // change until this is explicitly adjusted.
+    // In multiples of 1/255 (one 8-bit LSB), applied as +-0.5x this value. 0 = off. Defaulted to
+    // off (2026-09-05, see FINDINGS.md's "Dither default moved to off" note) - higher dither
+    // measured as a small Laplacian-variance *increase* while the supersample downscale was still
+    // undersampling two-thirds of its own intended source pixels (the tap-spacing bug), which is
+    // suspicious in hindsight: added noise reads as texture when real detail is already being lost
+    // to a lossy downscale, but is pure cost once the downscale actually samples correctly. No
+    // clean evidence dither is a net win post-fix, and it's signal the encoder has to spend bits
+    // carrying either way - off until shown otherwise.
     public static final float[] DITHER_AMOUNT_LSB_VALUES = {0f, 0.5f, 1f, 2f};
-    public static final float DEFAULT_DITHER_AMOUNT_LSB = 1f;
+    public static final float DEFAULT_DITHER_AMOUNT_LSB = 0f;
 
     private static SharedPreferences prefs() {
         return ApplicationLoader.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
