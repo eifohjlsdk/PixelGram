@@ -3185,14 +3185,21 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             supersampleFrameBuffer = fb;
             supersampleTexture = tex;
 
-            // Capture pixels per output pixel - e.g. 3.0 for the default 1920-capture/640-output
-            // recording. Assumes a roughly-square capture/output (true for every mode this app
-            // currently offers - see FINDINGS.md) so one ratio value serves both the horizontal
-            // and vertical passes despite their different source dimensions.
-            float downscaleRatio = (float) sourcePreviewSize.getWidth() / videoWidth;
-            float[] downscaleWeights = downscaleWeightsFor(PixelGramSettings.getDownscaleFilter(), downscaleRatio);
+            // Capture pixels per output pixel, computed separately per axis - e.g. 3.0 horizontal
+            // for a 1920-wide capture downscaled to 640, but NOT necessarily the same vertically:
+            // a non-square capture (e.g. 1920x1080, measured on this device alongside the
+            // 1920x1920 square mode - see FINDINGS.md's tap-spacing fix report) downscales height
+            // by a different factor (1080/640=1.6875) than width (1920/640=3.0). A single shared
+            // ratio here was an earlier bug in this same fix - the H-pass and V-pass each need
+            // their own ratio-adaptive Lanczos weights, since they downscale different axes by
+            // different factors whenever capture isn't square.
+            float widthDownscaleRatio = (float) sourcePreviewSize.getWidth() / videoWidth;
+            float heightDownscaleRatio = (float) sourcePreviewSize.getHeight() / videoHeight;
+            int downscaleFilter = PixelGramSettings.getDownscaleFilter();
+            float[] hDownscaleWeights = downscaleWeightsFor(downscaleFilter, widthDownscaleRatio);
+            float[] vDownscaleWeights = downscaleWeightsFor(downscaleFilter, heightDownscaleRatio);
             int vs1 = loadShader(GLES20.GL_VERTEX_SHADER, SUPERSAMPLE_H_VERTEX_SHADER);
-            int fs1 = loadShader(GLES20.GL_FRAGMENT_SHADER, buildSupersampleHFragmentShader(downscaleWeights));
+            int fs1 = loadShader(GLES20.GL_FRAGMENT_SHADER, buildSupersampleHFragmentShader(hDownscaleWeights));
             if (vs1 != 0 && fs1 != 0) {
                 int program = GLES20.glCreateProgram();
                 GLES20.glAttachShader(program, vs1);
@@ -3213,7 +3220,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
             }
 
             int vs2 = loadShader(GLES20.GL_VERTEX_SHADER, SUPERSAMPLE_V_VERTEX_SHADER);
-            int fs2 = loadShader(GLES20.GL_FRAGMENT_SHADER, buildSupersampleVFragmentShader(downscaleWeights));
+            int fs2 = loadShader(GLES20.GL_FRAGMENT_SHADER, buildSupersampleVFragmentShader(vDownscaleWeights));
             if (vs2 != 0 && fs2 != 0) {
                 int program = GLES20.glCreateProgram();
                 GLES20.glAttachShader(program, vs2);

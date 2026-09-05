@@ -2541,3 +2541,32 @@ out. The remaining open candidate is upstream of anything this codebase's
 software controls** (the platform's own `AudioSource`-dependent tuning),
 which narrows this considerably even without a definitive answer.
 
+## Second bug found in the fix itself: the ratio was shared across a non-square capture (2026-09-05, fixed same session)
+
+The new recording's marker log showed `capture:1920x1080` - the first
+non-square capture size seen in any of this session's tests (every prior
+test was `1920x1920`). The just-landed fix computed a single downscale
+ratio (`sourcePreviewSize.getWidth() / videoWidth`) and used it for *both*
+the horizontal and vertical Lanczos weight tables. For a square capture
+this is harmless since both axes share the same ratio; for `1920x1080` at
+a 640 output it isn't - width ratio is 1920/640=3.0, height ratio is
+1080/640=1.6875, and the V-pass was still using the width-derived (too
+wide) ratio for its own, different downscale factor. This would have
+under-supported the V-pass's kernel relative to what its actual 1.6875x
+downscale calls for, likely costing some vertical sharpness specifically
+on non-square captures - a new instance of the same class of bug the
+tap-spacing fix addressed, just narrower in scope.
+
+Fixed by computing the two ratios separately
+(`sourcePreviewSize.getWidth()/videoWidth` for the H-pass,
+`sourcePreviewSize.getHeight()/videoHeight` for the V-pass) and building
+each pass's Lanczos weight table from its own ratio. The vertex-shader tap
+*positions* were never affected by this - those already used each pass's
+own correct texel size (source width/height respectively) after the
+tap-spacing fix - only the per-pass *weight* tables were sharing one
+ratio. Not yet re-measured on-device against a non-square capture
+specifically; the numbers in the section above were all captured before
+this second fix landed, so they reflect the width-ratio-only V-pass
+weights, not this correction. Whether this made a measurable difference
+on the `1920x1080` case would need one more recording to confirm.
+
