@@ -2291,6 +2291,125 @@ Verified via `:TMessagesProj_App:compileAfatDebugJavaWithJavac`. Not yet
 measured on-device against the confirmed-softer baseline below - that's
 the next recording.
 
+## Sharpness baseline established: all three dither levels well below iPhone before the fix (2026-09-05)
+
+Recorded three matched clips, oldest to newest, before the tap-spacing fix
+landed: dither off, then 1x, then 2x, plus a fourth iPhone reference clip -
+same scene, same distance, sitting still. **Could not cross-check the
+stated recording order against the on-device log as planned**: the live
+logcat buffer had already rotated past these recordings by the time this
+analysis ran, and the persisted rotating log file
+(`PixelCameraLog`'s own file, gated on the "Debug Logging" setting) wasn't
+being written at all - Debug Logging defaults off, and this was a fresh
+install after the applicationId change, so the setting was back at its
+default. Proceeded on the stated order (file timestamps are consistent
+with it), but this is a real, flagged gap, not a confirmed cross-check -
+worth turning "Debug Logging" on before the next comparison if this
+matters again.
+
+Same normalized method as the earlier iPhone comparison (downscale to
+iPhone's 400x400 pixel pitch with ffmpeg's unbiased `area` algorithm,
+Laplacian-variance sharpness metric):
+
+| Clip | Laplacian variance | Ratio vs. iPhone |
+|---|---|---|
+| Dither off | 1055.1 | 0.326x |
+| Dither 1x | 1111.7 | 0.344x |
+| Dither 2x | 1135.1 | 0.351x |
+| iPhone | 3232.7 | - |
+
+**All three sit in the same ballpark, well below iPhone regardless of
+dither setting** - confirming the tap-spacing issue (fixed above) as the
+dominant driver of the softness, not dither. This is the pre-fix baseline
+the corrected tap spacing should improve on; a re-recording after the fix
+is the next step.
+
+**Whether dither itself contributes anything on top of that is genuinely
+unresolved from this data**, not just unmeasured - the two metrics tried
+disagree in a way that points to a methodology problem rather than a real
+answer:
+- Laplacian variance *rises* slightly with more dither (1055 -> 1112 ->
+  1135) - expected and uninformative either way, since dither mechanically
+  adds high-frequency energy whether or not it's perceived as detail or as
+  haze; this metric can't tell those apart.
+- A direct edge-width measurement (same hairline-edge method as the
+  iPhone comparison) instead *narrows* with more dither (10.9px -> 9.4px ->
+  6.2px, moving toward iPhone's 4.5px) - the opposite of what "dither reads
+  as haze" would predict, but this is only one edge location per clip
+  across three separate takes with their own natural pose variation, and a
+  threshold-crossing width measurement is exactly the kind of metric random
+  noise could distort in either direction without reflecting genuine
+  sharpness. Not trusted as a real finding.
+
+Isolating dither's actual contribution (if any) would need multiple frames
+averaged per clip and ideally a single static frame compared frame-for-frame
+across dither settings, not three separate short takes - not pursued
+further here since the dominant effect (tap spacing) is already identified
+and fixed.
+
+## Audio comparison vs iPhone: RNNoise off, Adaptive Gain at -15dBFS target (2026-09-05)
+
+First measurement of this specific configuration against the iPhone
+reference. Used `ffmpeg`'s `astats` filter for levels/noise floor and a
+pure-Python Welch-averaged FFT (no numpy/scipy available) for frequency
+response, on the same four-clip recording session as the video comparison
+above (any of the three PixelGram clips' audio, since dither doesn't touch
+audio - used `dither_1x`).
+
+**Levels**: overall-clip RMS varied noticeably across the three PixelGram
+takes despite a fixed -15dBFS target (dither off -27.96dB, 1x -24.52dB, 2x
+-22.40dB) - and correlates with each clip's *duration* (8.1s / 9.0s / 9.5s,
+shortest-to-longest matching quietest-to-loudest). Likely explanation:
+Adaptive Gain's slow leveler (1s attack / 4s release, chosen so a brief
+pause doesn't get overcorrected) may not fully converge within a typical
+~8-10s round-video clip, especially starting from 0dB (1x) at the start of
+every fresh recording - longer clips simply had more time to climb toward
+the target before ending. The "RMS peak dB" figure (a windowed running-RMS
+peak, a better proxy for sustained speech level than the whole-clip average
+which silence/pauses dilute) was closer to target-shaped for the middle
+take (1x: -15.95dB, close to the stated -15dBFS) but still ranged from
+-19.9dB (off) to -12.5dB (2x) - consistent with the same
+not-fully-converged-within-clip-length explanation rather than a stable,
+repeatable target level. **Worth checking whether the leveler's time
+constants are well-matched to typical round-video clip lengths** - this
+wasn't part of what was asked but fell out of the data.
+
+**Noise floor**: iPhone shows a real, finite measured noise floor (-37.1dB,
+219 samples at that level). Ours reports `-inf` with a much larger count
+(3745 samples) at the extreme floor - consistent with genuine
+digital-silence stretches, not just "very quiet." Whether that reflects a
+genuinely quieter capture chain or something else entirely (e.g. how
+Adaptive Gain's silence-frozen gain interacts with an already-near-zero
+signal) isn't resolved here - the noise *character* also isn't
+comparable given the frequency-response difference below, so a bare dB
+comparison between the two noise floors likely isn't apples-to-apples
+either.
+
+**Frequency response - the clearest, most concrete difference found**:
+averaged (Welch-method) power spectrum over active-speech windows only
+(silence skipped), split into bands:
+
+| Band | Ours | iPhone |
+|---|---|---|
+| Low (80-300Hz) | 77.7% | 45.8% |
+| Mid (300-2000Hz, primary speech band) | 19.6% | 51.2% |
+| High (2-6kHz) | 0.7% | 1.3% |
+| Very high (6-20kHz) | 0.1% | 1.3% |
+
+Ours is heavily low-frequency-weighted relative to the iPhone's much more
+balanced low/mid split, and the iPhone captures meaningfully more
+high-frequency content (13x more energy in the 6-20kHz band). This is a
+clean, plausible explanation for a perceived "muffled/duller" audio
+quality, distinct from the video sharpness issue. **Candidate causes, not
+distinguished from each other here**: a genuine capture-chain frequency
+response difference (AudioSource choice, AAC encoder bitrate/profile), or
+simply that the two phones were held at different distances/angles from
+the mouth in their separate takes - close-mic'd sources naturally pick up
+more low frequency (proximity effect) as a matter of physics, unrelated to
+any processing choice. Distinguishing these needs a controlled test (same
+physical distance/position for both phones, ideally simultaneous) rather
+than two independently-positioned recordings.
+
 ## Reproduce the measurement
 adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
