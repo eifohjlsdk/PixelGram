@@ -2821,3 +2821,27 @@ for the `logZoomCropReadback()` line (rate-limited to 1/sec, requires debug logg
 reports the HAL's own applied `CONTROL_ZOOM_RATIO` from the capture *result*, which would
 settle definitively whether the HAL is still overriding the pin.
 
+## v1.1.1 voice-message crackle: traced to a stale ByteBuffer limit on pool reuse (2026-09-06)
+
+Also reported against the v1.1.1 release build - same commit-match verification as above.
+
+**Voice-message crackle.** Reproduced as a genuine splice-like artifact in both saved v1.1.1
+clips (not just loud-speech transients - raw samples around each event are visibly
+incoherent, phase/amplitude-mismatched against both neighbors), sparse (16 in one ~15.4s
+clip), each exactly 240 samples (5.0ms) wide. Traced to `MediaController`'s `recordRunnable`:
+its `recordBuffers` pool is never cleared, for the process lifetime or across recordings, and
+each buffer's `limit` gets shrunk to the actual byte count whenever a read returns less than
+`recordBufferSize` (routine for a recording's last, partial read; plausible mid-recording
+under scheduler pressure too). The buffer was reset for reuse via `rewind()`, which only
+resets `position` - the shrunk `limit` from whatever that buffer's *previous* use left behind
+carried forward into its next draw from the pool, so a "fresh" full-`recordBufferSize` read
+request was made against a buffer whose `remaining()` no longer matched. Fixed by using
+`clear()` instead (`position=0`, `limit=capacity`), so every draw from the pool is genuinely
+ready for a full read regardless of what its last use left behind. A standalone simulation
+(real `ByteBuffer` semantics, a fake `AudioRecord` that clamps short like the platform is
+documented to) confirms `rewind()` lets a single short read permanently cap that buffer's
+usable size for the rest of the process, while `clear()` never does - though under that
+clamp model the defect costs throughput, not sample correctness, so it isn't yet certain this
+is the *entire* explanation for the erratic-noise-burst shape observed rather than only part
+of it. Verification pending a fresh recording on the fixed build, checked for discontinuities
+at the 20ms (960-sample, one Opus frame) boundary specifically rather than by ear.

@@ -1154,7 +1154,19 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                     buffer = ByteBuffer.allocateDirect(recordBufferSize);
                     buffer.order(ByteOrder.nativeOrder());
                 }
-                buffer.rewind();
+                // clear(), not rewind(): recordBuffers is a pool reused across the whole
+                // recording (and across recordings - it's never cleared between them), and a
+                // buffer's limit gets shrunk to len below whenever a read returns fewer than
+                // capacity bytes (routine for the last, partial read of any recording, and
+                // possible mid-recording under scheduler pressure). rewind() only resets
+                // position, leaving that shrunk limit in place - the next time this same buffer
+                // is drawn from the pool, requesting a fresh full-capacity read against a buffer
+                // whose remaining() is still capped at the old short length is exactly the kind
+                // of stale-buffer-reuse bug that produces a short/corrupted read instead of the
+                // full one actually available. clear() resets limit back to capacity too, so
+                // every draw from the pool is genuinely ready for a full read regardless of what
+                // the buffer's last use left behind.
+                buffer.clear();
                 int len = audioRecorder.read(buffer, buffer.capacity());
                 if (len > 0) {
                     buffer.limit(len);
