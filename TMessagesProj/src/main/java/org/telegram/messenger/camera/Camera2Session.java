@@ -1077,6 +1077,16 @@ public class Camera2Session {
             captureRequestBuilder.addTarget(surface);
             captureSession.setRepeatingRequest(captureRequestBuilder.build(), captureCallback, handler);
         } catch (Exception e) {
+            // This one catch spans the whole method: everything from template selection through
+            // every explicit capture-request key set above - CONTROL_ZOOM_RATIO's pin included -
+            // never reaches setRepeatingRequest() if anything earlier in this try throws, and the
+            // camera silently keeps running whatever repeating request was previously submitted.
+            // FileLog.e() alone is a no-op unless BuildVars.LOGS_ENABLED is on, which defaults off
+            // in a release build - so this used to fail with no visible trace at all in exactly
+            // the build where it matters most. Also log via PixelCameraLog, which always reaches
+            // logcat regardless of that flag, so a swallowed exception here is diagnosable instead
+            // of just manifesting as "some setting/fix silently stopped applying."
+            PixelCameraLog.w("camera #" + cameraId + ": updateCaptureRequest failed, capture request not updated", e);
             FileLog.e("Camera2Sessions setRepeatingRequest error in updateCaptureRequest", e);
         }
     }

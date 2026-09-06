@@ -2781,3 +2781,43 @@ post-per-axis-fix, and not compared against 0x/1x on that same build) -
 it's a reason to distrust the *old* evidence, not a new measurement
 proving dither is actively harmful. Off until there's a clean, correctly-
 filtered A/B to justify turning it back on.
+
+## v1.1.1 zoom-jump regression: no settings mismatch found, but a silent-swallow bug fixed (2026-09-06)
+
+Reported against the v1.1.1 release build - confirmed via SHA-256 that the installed APK
+matches the tagged build commit, so the `CONTROL_ZOOM_RATIO` pin (see the per-axis-fix
+section above) is genuinely present in what regressed.
+
+**Zoom jump.** Confirmed via `dumpsys media.camera` that this device's `CONTROL_ZOOM_RATIO_RANGE`
+(0.508-30.0) is genuinely available, and the pin at `updateCaptureRequest()`'s
+`CONTROL_ZOOM_RATIO` block is unconditionally reachable from every zoom-changing call path
+(`setZoom()`, the pinch/animated-zoom entry point, calls `updateCaptureRequest()` before
+resubmitting). Audited every `PixelGramSettings` getter/setter/`resetToDefaults()` triple
+(~30 settings) for a stored-type mismatch (a key written via one `SharedPreferences.putX`
+but read via a different `getX`) - found none, source-level or in the actual on-device
+`pixelgram_settings.xml` (pulled via `run-as` from the debug build). What the audit did find,
+and fix: `updateCaptureRequest()`'s entire body - template selection through every explicit
+capture-request key, `CONTROL_ZOOM_RATIO`'s pin included - sits inside one method-level
+`catch (Exception e)` that only called `FileLog.e(...)`, which is a silent no-op unless
+`BuildVars.LOGS_ENABLED` is on (defaults off in a release build). Anything thrown anywhere
+earlier in that large method - by any of the many individual `captureRequestBuilder.set()`
+calls that aren't independently caught, by a `PixelGramSettings` getter, by the platform
+itself - would silently abort the *entire* update (the camera keeps its last-submitted
+repeating request; `setRepeatingRequest()` is never reached) with no visible trace in the
+build where it matters most. This can't be confirmed as *the* zoom-jump mechanism without
+catching it live (logcat was clear of any camera activity by the time this was
+investigated - the ring buffer had already rotated past the session that showed the jump),
+but it's a real, verified way for a fix late in this method to silently stop applying, and
+it's now fixed independently of whether it's this specific bug: the catch also logs via
+`PixelCameraLog.w(...)`, which always reaches logcat regardless of `LOGS_ENABLED`. Separately,
+every `PixelGramSettings` getter now routes through a small per-type wrapper
+(`getIntSetting`/`getFloatSetting`/etc.) that catches `ClassCastException` specifically (not
+the settings' own broad `Exception` catches elsewhere, which are for platform/HAL rejection,
+a different failure class) and always logs loudly before falling back to the default - so if
+this class of bug (a setting silently reverting because of a stored-type mismatch) is ever
+introduced by a future rename/retype, it's diagnosable on sight instead of an invisible
+fallback. **Recommended next step if the jump recurs**: reproduce with logcat clear and check
+for the `logZoomCropReadback()` line (rate-limited to 1/sec, requires debug logging on) - it
+reports the HAL's own applied `CONTROL_ZOOM_RATIO` from the capture *result*, which would
+settle definitively whether the HAL is still overriding the pin.
+

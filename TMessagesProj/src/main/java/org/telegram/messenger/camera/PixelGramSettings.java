@@ -329,8 +329,66 @@ public class PixelGramSettings {
         return ApplicationLoader.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
     }
 
+    // Every getter below reads through one of these rather than calling prefs().getX() directly.
+    // SharedPreferences remembers whatever type a key was last *written* as - if any past version
+    // of this class ever stored a given key under a different type than the getter below now
+    // expects (a renamed/retyped setting, a copy-paste that grabbed the wrong put* call, etc.),
+    // the plain prefs().getX() call throws ClassCastException on any device that already has the
+    // old value on disk. That's a real, previously-unguarded way for a setting to silently stop
+    // working: caught by a broad try/catch further up the call stack (or left uncaught, aborting
+    // whatever multi-step method was reading it) with no obvious connection back to "this specific
+    // preference has the wrong stored type." Catching narrowly right here, at the one place that
+    // knows which key and which expected type were involved, and always logging to logcat (not
+    // gated behind isDebugLoggingEnabled() - if a setting is silently broken, discovering that
+    // shouldn't itself depend on a setting) turns a silent, hard-to-trace fallback into an
+    // immediately diagnosable one, while still degrading to the default rather than crashing.
+    private static int getIntSetting(String key, int def) {
+        try {
+            return prefs().getInt(key, def);
+        } catch (ClassCastException e) {
+            PixelCameraLog.w("PixelGramSettings: \"" + key + "\" is stored as the wrong type (expected int) - using default " + def, e);
+            return def;
+        }
+    }
+
+    private static float getFloatSetting(String key, float def) {
+        try {
+            return prefs().getFloat(key, def);
+        } catch (ClassCastException e) {
+            PixelCameraLog.w("PixelGramSettings: \"" + key + "\" is stored as the wrong type (expected float) - using default " + def, e);
+            return def;
+        }
+    }
+
+    private static boolean getBooleanSetting(String key, boolean def) {
+        try {
+            return prefs().getBoolean(key, def);
+        } catch (ClassCastException e) {
+            PixelCameraLog.w("PixelGramSettings: \"" + key + "\" is stored as the wrong type (expected boolean) - using default " + def, e);
+            return def;
+        }
+    }
+
+    private static long getLongSetting(String key, long def) {
+        try {
+            return prefs().getLong(key, def);
+        } catch (ClassCastException e) {
+            PixelCameraLog.w("PixelGramSettings: \"" + key + "\" is stored as the wrong type (expected long) - using default " + def, e);
+            return def;
+        }
+    }
+
+    private static String getStringSetting(String key, String def) {
+        try {
+            return prefs().getString(key, def);
+        } catch (ClassCastException e) {
+            PixelCameraLog.w("PixelGramSettings: \"" + key + "\" is stored as the wrong type (expected String) - using default " + def, e);
+            return def;
+        }
+    }
+
     public static int getNoiseReductionMode() {
-        return prefs().getInt(KEY_NOISE_REDUCTION, DEFAULT_NOISE_REDUCTION);
+        return getIntSetting(KEY_NOISE_REDUCTION, DEFAULT_NOISE_REDUCTION);
     }
 
     public static void setNoiseReductionMode(int mode) {
@@ -338,7 +396,7 @@ public class PixelGramSettings {
     }
 
     public static int getEdgeMode() {
-        return prefs().getInt(KEY_EDGE_MODE, DEFAULT_EDGE_MODE);
+        return getIntSetting(KEY_EDGE_MODE, DEFAULT_EDGE_MODE);
     }
 
     public static void setEdgeMode(int mode) {
@@ -346,7 +404,7 @@ public class PixelGramSettings {
     }
 
     public static int getTonemapMode() {
-        return prefs().getInt(KEY_TONEMAP_MODE, DEFAULT_TONEMAP_MODE);
+        return getIntSetting(KEY_TONEMAP_MODE, DEFAULT_TONEMAP_MODE);
     }
 
     public static void setTonemapMode(int mode) {
@@ -354,7 +412,7 @@ public class PixelGramSettings {
     }
 
     public static boolean isFaceAeMeteringEnabled() {
-        return prefs().getBoolean(KEY_FACE_AE_METERING, DEFAULT_FACE_AE_METERING);
+        return getBooleanSetting(KEY_FACE_AE_METERING, DEFAULT_FACE_AE_METERING);
     }
 
     public static void setFaceAeMeteringEnabled(boolean enabled) {
@@ -362,7 +420,7 @@ public class PixelGramSettings {
     }
 
     public static boolean isLowLightBoostEnabled() {
-        return prefs().getBoolean(KEY_LOW_LIGHT_BOOST, DEFAULT_LOW_LIGHT_BOOST);
+        return getBooleanSetting(KEY_LOW_LIGHT_BOOST, DEFAULT_LOW_LIGHT_BOOST);
     }
 
     public static void setLowLightBoostEnabled(boolean enabled) {
@@ -370,7 +428,7 @@ public class PixelGramSettings {
     }
 
     public static boolean isPreviewStabilizationEnabled() {
-        return prefs().getBoolean(KEY_PREVIEW_STABILIZATION, DEFAULT_PREVIEW_STABILIZATION);
+        return getBooleanSetting(KEY_PREVIEW_STABILIZATION, DEFAULT_PREVIEW_STABILIZATION);
     }
 
     public static void setPreviewStabilizationEnabled(boolean enabled) {
@@ -378,7 +436,7 @@ public class PixelGramSettings {
     }
 
     public static float getExposureCompensationEv() {
-        return prefs().getFloat(KEY_EXPOSURE_COMPENSATION, DEFAULT_EXPOSURE_COMPENSATION);
+        return getFloatSetting(KEY_EXPOSURE_COMPENSATION, DEFAULT_EXPOSURE_COMPENSATION);
     }
 
     public static void setExposureCompensationEv(float ev) {
@@ -386,7 +444,7 @@ public class PixelGramSettings {
     }
 
     public static int getResolution() {
-        return prefs().getInt(KEY_RESOLUTION, DEFAULT_RESOLUTION);
+        return getIntSetting(KEY_RESOLUTION, DEFAULT_RESOLUTION);
     }
 
     public static void setResolution(int resolution) {
@@ -394,7 +452,7 @@ public class PixelGramSettings {
     }
 
     public static int getVideoBitrate() {
-        return prefs().getInt(KEY_VIDEO_BITRATE, DEFAULT_VIDEO_BITRATE);
+        return getIntSetting(KEY_VIDEO_BITRATE, DEFAULT_VIDEO_BITRATE);
     }
 
     public static void setVideoBitrate(int bitrate) {
@@ -421,7 +479,7 @@ public class PixelGramSettings {
     }
 
     public static int getAudioBitrate() {
-        return prefs().getInt(KEY_AUDIO_BITRATE, DEFAULT_AUDIO_BITRATE);
+        return getIntSetting(KEY_AUDIO_BITRATE, DEFAULT_AUDIO_BITRATE);
     }
 
     public static void setAudioBitrate(int bitrate) {
@@ -429,7 +487,7 @@ public class PixelGramSettings {
     }
 
     public static int getOpusApplicationMode() {
-        return prefs().getInt(KEY_OPUS_APPLICATION, DEFAULT_OPUS_APPLICATION);
+        return getIntSetting(KEY_OPUS_APPLICATION, DEFAULT_OPUS_APPLICATION);
     }
 
     public static void setOpusApplicationMode(int mode) {
@@ -437,7 +495,7 @@ public class PixelGramSettings {
     }
 
     public static int getOpusBitrate() {
-        return prefs().getInt(KEY_OPUS_BITRATE, DEFAULT_OPUS_BITRATE);
+        return getIntSetting(KEY_OPUS_BITRATE, DEFAULT_OPUS_BITRATE);
     }
 
     public static void setOpusBitrate(int bitrate) {
@@ -445,7 +503,7 @@ public class PixelGramSettings {
     }
 
     public static boolean isDebugLoggingEnabled() {
-        return prefs().getBoolean(KEY_DEBUG_LOGGING, DEFAULT_DEBUG_LOGGING);
+        return getBooleanSetting(KEY_DEBUG_LOGGING, DEFAULT_DEBUG_LOGGING);
     }
 
     public static void setDebugLoggingEnabled(boolean enabled) {
@@ -453,7 +511,7 @@ public class PixelGramSettings {
     }
 
     public static int getVoiceEnhancementMode() {
-        return prefs().getInt(KEY_VOICE_ENHANCEMENT, DEFAULT_VOICE_ENHANCEMENT);
+        return getIntSetting(KEY_VOICE_ENHANCEMENT, DEFAULT_VOICE_ENHANCEMENT);
     }
 
     public static void setVoiceEnhancementMode(int mode) {
@@ -492,7 +550,7 @@ public class PixelGramSettings {
     }
 
     public static boolean isNoiseSuppressionEnabled() {
-        return prefs().getBoolean(KEY_NOISE_SUPPRESSION, DEFAULT_NOISE_SUPPRESSION);
+        return getBooleanSetting(KEY_NOISE_SUPPRESSION, DEFAULT_NOISE_SUPPRESSION);
     }
 
     public static void setNoiseSuppressionEnabled(boolean enabled) {
@@ -500,7 +558,7 @@ public class PixelGramSettings {
     }
 
     public static boolean isAgcEnabled() {
-        return prefs().getBoolean(KEY_AGC, DEFAULT_AGC);
+        return getBooleanSetting(KEY_AGC, DEFAULT_AGC);
     }
 
     public static void setAgcEnabled(boolean enabled) {
@@ -508,7 +566,7 @@ public class PixelGramSettings {
     }
 
     public static boolean isEchoCancellationEnabled() {
-        return prefs().getBoolean(KEY_ECHO_CANCELLATION, DEFAULT_ECHO_CANCELLATION);
+        return getBooleanSetting(KEY_ECHO_CANCELLATION, DEFAULT_ECHO_CANCELLATION);
     }
 
     public static void setEchoCancellationEnabled(boolean enabled) {
@@ -516,7 +574,7 @@ public class PixelGramSettings {
     }
 
     public static int getMicGainMode() {
-        return prefs().getInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN);
+        return getIntSetting(KEY_MIC_GAIN, DEFAULT_MIC_GAIN);
     }
 
     public static void setMicGainMode(int mode) {
@@ -531,7 +589,7 @@ public class PixelGramSettings {
      * the round-video setting's MIC_GAIN_* mode constants and the same underlying gain+limiter
      * code, just with its own default and its own stored preference. */
     public static int getMicGainModeVoiceMessage() {
-        return prefs().getInt(KEY_MIC_GAIN_VOICE_MESSAGE, DEFAULT_MIC_GAIN_VOICE_MESSAGE);
+        return getIntSetting(KEY_MIC_GAIN_VOICE_MESSAGE, DEFAULT_MIC_GAIN_VOICE_MESSAGE);
     }
 
     public static void setMicGainModeVoiceMessage(int mode) {
@@ -543,7 +601,7 @@ public class PixelGramSettings {
     }
 
     public static boolean isAdaptiveGainEnabled() {
-        return prefs().getBoolean(KEY_ADAPTIVE_GAIN_ENABLED, DEFAULT_ADAPTIVE_GAIN);
+        return getBooleanSetting(KEY_ADAPTIVE_GAIN_ENABLED, DEFAULT_ADAPTIVE_GAIN);
     }
 
     public static void setAdaptiveGainEnabled(boolean enabled) {
@@ -551,7 +609,7 @@ public class PixelGramSettings {
     }
 
     public static float getAdaptiveGainTargetDb() {
-        return prefs().getFloat(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB);
+        return getFloatSetting(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB);
     }
 
     public static void setAdaptiveGainTargetDb(float db) {
@@ -559,7 +617,7 @@ public class PixelGramSettings {
     }
 
     public static float getAdaptiveGainSlowAttackSec() {
-        return prefs().getFloat(KEY_ADAPTIVE_GAIN_SLOW_ATTACK_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC);
+        return getFloatSetting(KEY_ADAPTIVE_GAIN_SLOW_ATTACK_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC);
     }
 
     public static void setAdaptiveGainSlowAttackSec(float seconds) {
@@ -567,7 +625,7 @@ public class PixelGramSettings {
     }
 
     public static float getAdaptiveGainSlowReleaseSec() {
-        return prefs().getFloat(KEY_ADAPTIVE_GAIN_SLOW_RELEASE_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC);
+        return getFloatSetting(KEY_ADAPTIVE_GAIN_SLOW_RELEASE_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC);
     }
 
     public static void setAdaptiveGainSlowReleaseSec(float seconds) {
@@ -676,7 +734,7 @@ public class PixelGramSettings {
     }
 
     public static int getMicDirectionMode() {
-        return prefs().getInt(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE);
+        return getIntSetting(KEY_MIC_DIRECTION_MODE, DEFAULT_MIC_DIRECTION_MODE);
     }
 
     public static void setMicDirectionMode(int mode) {
@@ -706,7 +764,7 @@ public class PixelGramSettings {
     }
 
     public static float getMicFieldDimension() {
-        return prefs().getFloat(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION);
+        return getFloatSetting(KEY_MIC_FIELD_DIMENSION, DEFAULT_MIC_FIELD_DIMENSION);
     }
 
     public static void setMicFieldDimension(float value) {
@@ -714,7 +772,7 @@ public class PixelGramSettings {
     }
 
     public static int getVoiceIsolationMode() {
-        return prefs().getInt(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE);
+        return getIntSetting(KEY_VOICE_ISOLATION_MODE, DEFAULT_VOICE_ISOLATION_MODE);
     }
 
     public static void setVoiceIsolationMode(int mode) {
@@ -722,7 +780,7 @@ public class PixelGramSettings {
     }
 
     public static int getSpeechEnhancementMode() {
-        return prefs().getInt(KEY_SPEECH_ENHANCEMENT_MODE, DEFAULT_SPEECH_ENHANCEMENT_MODE);
+        return getIntSetting(KEY_SPEECH_ENHANCEMENT_MODE, DEFAULT_SPEECH_ENHANCEMENT_MODE);
     }
 
     public static void setSpeechEnhancementMode(int mode) {
@@ -730,7 +788,7 @@ public class PixelGramSettings {
     }
 
     public static float getSpeechEnhancementWetFraction() {
-        return prefs().getFloat(KEY_SPEECH_ENHANCEMENT_WET, DEFAULT_SPEECH_ENHANCEMENT_WET);
+        return getFloatSetting(KEY_SPEECH_ENHANCEMENT_WET, DEFAULT_SPEECH_ENHANCEMENT_WET);
     }
 
     public static void setSpeechEnhancementWetFraction(float wet) {
@@ -738,7 +796,7 @@ public class PixelGramSettings {
     }
 
     public static float getVoiceIsolationGateThresholdDb() {
-        return prefs().getFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB);
+        return getFloatSetting(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB);
     }
 
     public static void setVoiceIsolationGateThresholdDb(float db) {
@@ -746,7 +804,7 @@ public class PixelGramSettings {
     }
 
     public static int getDownscaleFilter() {
-        return prefs().getInt(KEY_DOWNSCALE_FILTER, DEFAULT_DOWNSCALE_FILTER);
+        return getIntSetting(KEY_DOWNSCALE_FILTER, DEFAULT_DOWNSCALE_FILTER);
     }
 
     public static void setDownscaleFilter(int filter) {
@@ -754,7 +812,7 @@ public class PixelGramSettings {
     }
 
     public static float getDitherAmountLsb() {
-        return prefs().getFloat(KEY_DITHER_AMOUNT_LSB, DEFAULT_DITHER_AMOUNT_LSB);
+        return getFloatSetting(KEY_DITHER_AMOUNT_LSB, DEFAULT_DITHER_AMOUNT_LSB);
     }
 
     public static void setDitherAmountLsb(float lsb) {
@@ -812,7 +870,7 @@ public class PixelGramSettings {
     // Update-check history, not a user preference - deliberately left out of
     // resetToDefaults() so a settings reset doesn't also reset the 30-day check window.
     public static long getLastUpdateCheckMs() {
-        return prefs().getLong(KEY_LAST_UPDATE_CHECK_MS, 0L);
+        return getLongSetting(KEY_LAST_UPDATE_CHECK_MS, 0L);
     }
 
     public static void setLastUpdateCheckMs(long ms) {
@@ -820,7 +878,7 @@ public class PixelGramSettings {
     }
 
     public static String getLastSeenVersion() {
-        return prefs().getString(KEY_LAST_SEEN_VERSION, "");
+        return getStringSetting(KEY_LAST_SEEN_VERSION, "");
     }
 
     public static void setLastSeenVersion(String version) {
