@@ -2101,6 +2101,14 @@ be worth it" - only a noisy-room test can.
 
 ## Sharpness comparison vs iPhone: real, measured softness, resolution-normalized (2026-09-05)
 
+**⚠️ NEEDS RE-VERIFICATION** (added 2026-09-07, not deleting): this measurement's commit
+(80ac3879e, 14:23) lands after the applicationId/Firebase reinstall that most likely reset the
+"Use Camera 2 API" toggle to off (see "Camera2 toggle silently reset to Camera1" below) - if
+Camera1 was already active by this point, the softness measured here could be explained
+entirely by EDGE_MODE_FAST/NOISE_REDUCTION_MODE/tonemap not applying at all (Camera2Session-only)
+rather than by a downscale-filter deficiency. This is the specific measurement flagged for
+re-run once Camera2 is confirmed active again.
+
 Compared matched circles (`video.mp4` iPhone at 400x400, `1788631976316.mp4`
 ours at 640x640, same pose/framing, static scene). No image library was
 available (no PIL/numpy/cv2/ImageMagick) - reused the pure-Python PNG
@@ -2226,6 +2234,10 @@ from the Lanczos tap-spacing issue above.
 
 ## Lanczos tap spacing fixed; made ratio-adaptive; weights' origin traced (2026-09-05)
 
+**⚠️ NEEDS RE-VERIFICATION** (added 2026-09-07, not deleting): the shader fix itself is
+camera-API-agnostic and can stand, but the diagnosis motivating it was built on the sharpness
+comparison flagged above as possibly measured under the Camera1 fallback - see that entry.
+
 Implemented the fix from the investigation above.
 
 **Tap spacing**: `texelSize` (the vertex shaders' per-tap UV step) now comes
@@ -2292,6 +2304,11 @@ measured on-device against the confirmed-softer baseline below - that's
 the next recording.
 
 ## Sharpness baseline established: all three dither levels well below iPhone before the fix (2026-09-05)
+
+**⚠️ NEEDS RE-VERIFICATION** (added 2026-09-07, not deleting): same Camera1-fallback risk as
+the sharpness comparison above - this baseline's commit (fc1576b46, 14:47) is also after the
+probable reinstall/re-login. The video portion of this baseline needs a re-run; the audio vs
+iPhone portion of the same session is unaffected (audio path is identical under Camera1/2).
 
 Recorded three matched clips, oldest to newest, before the tap-spacing fix
 landed: dither off, then 1x, then 2x, plus a fourth iPhone reference clip -
@@ -2415,6 +2432,11 @@ adb pull "/sdcard/Download/Telegram/<file>.mp4" ~/circles/<name>.mp4
 ffprobe -v error -show_entries stream=codec_type,r_frame_rate,avg_frame_rate,bit_rate,nb_frames,start_time,duration -of default=noprint_wrappers=1 <file>
 ffprobe -v error -select_streams v -show_entries frame=pts_time -of csv=p=0 <file> | awk 'NR>1{d=$1-p; if(d>0.05) printf "gap %.3fs at t=%.3f\n", d, $1} {p=$1}'
 ## Lanczos fix measured: recovers ~40% of the sharpness deficit, doesn't close it (2026-09-05)
+
+**⚠️ NEEDS RE-VERIFICATION** (added 2026-09-07, not deleting): commit 466676b3f (15:15) is in
+the same post-reinstall window as the entries above - if Camera1 was active throughout this
+whole sharpness-chasing sequence, the "doesn't close it" gap could be partly or entirely the
+missing Camera2-only sharpening controls rather than a real downscale-filter shortfall.
 
 Recorded the same four-clip sequence again on the fixed build (dither off,
 1x, 2x, then the iPhone reference), debug logging on this time so the
@@ -2542,6 +2564,13 @@ software controls** (the platform's own `AudioSource`-dependent tuning),
 which narrows this considerably even without a definitive answer.
 
 ## Second bug found in the fix itself: the ratio was shared across a non-square capture (2026-09-05, fixed same session)
+
+**⚠️ NEEDS RE-VERIFICATION** (added 2026-09-07, not deleting): the non-square-ratio code fix
+itself stands regardless of camera API, but the `1920x1080` capture size that exposed it is
+worth double-checking against `cameraApi:` on the marker line once re-run - Camera1's
+`chooseOptimalSize()` picks preview sizes independently of `PixelGramSettings.getResolution()`,
+so this specific capture geometry may not recur, or may recur for a different reason, under
+Camera2.
 
 The new recording's marker log showed `capture:1920x1080` - the first
 non-square capture size seen in any of this session's tests (every prior
@@ -2683,6 +2712,10 @@ audible at this setting.
 
 ## Per-axis Lanczos fix measured: further recovery, 0.60x of iPhone's variance (2026-09-05)
 
+**⚠️ NEEDS RE-VERIFICATION** (added 2026-09-07, not deleting): commit 497fb4e08 (15:44), same
+post-reinstall window as the rest of this sharpness-chasing sequence - the 0.60x figure needs
+re-measuring with Camera2 confirmed active before it's trusted as the fix's real ceiling.
+
 Recorded one more matched pair (PixelGram + iPhone, same scene/distance) on
 the build with the per-axis ratio fix applied, still at `capture:1920x1080`
 (confirmed via the marker log) - the same non-square case that fix
@@ -2756,6 +2789,11 @@ to trigger a silence-freeze/re-attack cycle - confirming that specifically
 would need a take with a deliberate pause of a second or more mid-sentence.
 
 ## Dither default moved to off: the earlier "2x looked better" impression is now suspect (2026-09-05)
+
+**⚠️ NEEDS RE-VERIFICATION** (added 2026-09-07, not deleting): a second, independent reason to
+distrust the earlier "2x looked better" reading, on top of the subjectivity already noted below
+- commit 6f904757b (15:47) is in the same post-reinstall window as the rest of this sequence,
+so that comparison may also have been made under the Camera1 fallback.
 
 Changed `PixelGramSettings.DEFAULT_DITHER_AMOUNT_LSB` from 1x to 0 (off),
 applying the recommendation from the shipping-defaults review above.
@@ -2900,7 +2938,59 @@ elsewhere in this file:
   identical whether or not any of it actually reached the camera. Every future recording's
   marker line now settles which pipeline produced it without needing a separate check.
 
-No in-UI indicator (toast/badge in the round-camera view itself) was added - that's a real
-option if the log-only signal proves insufficient in practice, but it's a user-facing change
-to a stock Telegram surface rather than a diagnostics-only one, so it wasn't made unilaterally
-here.
+No in-UI indicator was added in the round-camera view itself (toast/badge there is a bigger,
+more interruptive change to a stock Telegram surface) - see the follow-up entry below for what
+was added instead.
+
+## Camera API status row added to PixelGram Settings; audit of which FINDINGS.md entries could have run under Camera1 (2026-09-07)
+
+**In-UI indication.** Added a single status-only row to `PixelGramSettingsActivity`, first row
+under "Recording" (`cameraApiStatusRow`), reading "Camera API: Camera 2 (active)" or "Camera 1
+fallback - ..." from `SharedConfig.isUsingCamera2()` directly - no toggle of its own (the real
+control stays in the stock Settings/Profile debug menu, this just surfaces its current effect
+on this screen), no toast/interruption. Refreshed on `onResume()` so flipping the toggle
+elsewhere and returning here updates it without a restart.
+
+**When the re-login most likely happened.** No exact timestamp was logged for it, so this is a
+reconstruction from surrounding commit times, not a certainty. The applicationId change
+(`18ea81c24`, 2026-09-05 08:41) immediately broke the build against the existing Firebase
+project config (`processAfatDebugGoogleServices` failed outright, per the "Package ID
+collision" entry above) - so no rebuild-and-reinstall of the new applicationId was even
+possible until Firebase was re-registered for it (`50d8cd2de`, 13:26:30). The next commit is a
+version bump nine minutes later (`7b12db574`, 13:29:45), consistent with cutting a build to
+verify the new applicationId/Firebase config actually worked end-to-end - which requires a
+fresh install and, since Telegram login is server-side and tied to the install, a re-login.
+That reinstall is the most likely trigger, placing the cutoff at **2026-09-05 ~13:30**. Testing
+resumes 52 minutes later at 14:21 (`48b37dab9`), a gap consistent with rebuilding, reinstalling
+on both the beta and release-signed test installs, and logging back in on each.
+
+By contrast, `526e6d748` (12:49:09, Preview Stabilization crop) and `a8c1c18a1` (10:49:09, Low
+Light Boost close-out) both predate 08:41's applicationId change's effect on the installed
+build entirely - they'd have run against the pre-existing install, untouched by any of this.
+
+**Audit result, everything in this file after the ~13:30 cutoff:**
+
+| Entry | Camera-API-dependent? | Status |
+|---|---|---|
+| Adaptive Gain "early impression" (14:21) | No - audio only | Not at risk |
+| Sharpness comparison vs iPhone (14:23) | Yes - resolution, edge/NR/tonemap modes | **Marked, needs re-verification** |
+| Lanczos tap spacing fix (14:46) | Diagnosis-only risk, fix itself is shader code | **Marked, needs re-verification** |
+| Sharpness baseline, 3 dither levels (14:47) | Yes (video); audio half of same entry is fine | **Marked, needs re-verification** |
+| Lanczos fix measured, ~40% recovery (15:15) | Yes | **Marked, needs re-verification** |
+| Non-square capture ratio bug (15:15) | Fix stands; capture geometry may not recur under Camera2 | **Marked, needs re-verification** |
+| Leveler attack/release adjustable (15:15) | No - audio only | Not at risk |
+| AudioSource reverted to CAMCORDER (15:27) | No - `AudioSource` selection is independent of the video capture API | Not at risk |
+| Leveler defaults retuned (15:27) | No - audio only | Not at risk |
+| Per-axis Lanczos fix, 0.60x recovery (15:44) | Yes | **Marked, needs re-verification** |
+| CAMCORDER didn't close treble gap (15:44) | No - audio only | Not at risk |
+| Dither default moved to off (15:47) | Yes, second reason to distrust it (first is subjectivity) | **Marked, needs re-verification** |
+| v1.1.1 zoom-jump, "no settings mismatch" (09-06) | Was the actual mechanism, per the root-cause entry above | Explained, not re-verification-pending |
+| v1.1.1 voice-message crackle (09-06) | No - `ByteBuffer` pool bug is audio-only, camera-API-independent | Not at risk |
+
+Every row marked "needs re-verification" got an inline `⚠️` note at its own heading rather than
+being deleted or rewritten, per instruction - the original measured numbers stay in place as a
+record of what was measured and when, alongside why they're not currently trusted. The
+sharpness-comparison chain (rows 2, 3, 4, 5, 8) is the one most worth re-running first: it's
+the only cluster where the flagged mechanism (Camera2-only edge/NR/tonemap modes not applying,
+plus a different resolution-selection path) could plausibly account for some or all of a
+measured deficit that was then chased through several rounds of shader fixes.

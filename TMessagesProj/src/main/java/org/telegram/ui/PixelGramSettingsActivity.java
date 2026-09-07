@@ -30,6 +30,7 @@ import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.PixelGramUpdateChecker;
 import org.telegram.messenger.R;
+import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.camera.Camera2Session;
 import org.telegram.messenger.camera.PixelGramSettings;
 import org.telegram.ui.ActionBar.ActionBar;
@@ -71,6 +72,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int divider0Row;
 
     private int headerRecordingRow;
+    private int cameraApiStatusRow;
     private int resolutionRow;
     private int videoBitrateRow;
     private int audioBitrateRow;
@@ -152,6 +154,15 @@ public class PixelGramSettingsActivity extends BaseFragment {
         divider0Row = rowCount++;
 
         headerRecordingRow = rowCount++;
+        // First row on purpose: every setting below it that's actually a Camera2Session capture
+        // request key (noise reduction, edge mode, tonemap, exposure compensation, face-AE,
+        // low light boost, preview stabilization, plus the zoom/fps pins that aren't
+        // user-settings at all) silently does nothing on the legacy Camera1 fallback this
+        // reflects - see FINDINGS.md's "Camera2 toggle silently reset to Camera1" entry. A
+        // status-only row, not a toggle: the actual setting lives in the stock Telegram debug
+        // menu (Settings/Profile -> "Use Camera 2 API"), so this doesn't duplicate that control,
+        // it just makes its current state visible from the screen where it actually matters.
+        cameraApiStatusRow = rowCount++;
         resolutionRow = rowCount++;
         videoBitrateRow = rowCount++;
         audioBitrateRow = rowCount++;
@@ -200,6 +211,17 @@ public class PixelGramSettingsActivity extends BaseFragment {
         headerUpdatesRow = rowCount++;
         checkNowRow = rowCount++;
         updateInfoRow = rowCount++;
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        // The actual "Use Camera 2 API" toggle lives in the stock Settings/Profile debug menu,
+        // not on this screen - a user can flip it there and come straight back here, so the
+        // status row needs to be re-read on every resume rather than only at createView().
+        if (listAdapter != null) {
+            listAdapter.notifyItemChanged(cameraApiStatusRow);
+        }
     }
 
     @Override
@@ -1133,7 +1155,17 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     break;
                 }
                 case TYPE_INFO: {
-                    if (position == updateInfoRow) {
+                    if (position == cameraApiStatusRow) {
+                        boolean active = SharedConfig.isUsingCamera2(currentAccount);
+                        TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
+                        if (active) {
+                            cell.setText("Camera API: Camera 2 (active). All settings below apply.");
+                        } else {
+                            cell.setText("Camera API: Camera 1 fallback - \"Use Camera 2 API\" is off in Settings. " +
+                                    "Zoom/fps pins, face-AE, noise reduction, edge mode, tone mapping, exposure " +
+                                    "compensation, low light boost and preview stabilization do NOT apply while this is off.");
+                        }
+                    } else if (position == updateInfoRow) {
                         TextInfoPrivacyCell cell = (TextInfoPrivacyCell) holder.itemView;
                         cell.setText("PixelGram version: " + BuildVars.PIXELGRAM_VERSION
                                 + "\nBased on Telegram: " + currentVersionName()
@@ -1160,7 +1192,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
             } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == lowLightBoostRow || position == previewStabilizationRow
                     || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow || position == adaptiveGainRow) {
                 return TYPE_CHECK;
-            } else if (position == updateInfoRow || position == lowLightBoostInfoRow) {
+            } else if (position == updateInfoRow || position == lowLightBoostInfoRow || position == cameraApiStatusRow) {
                 return TYPE_INFO;
             } else {
                 return TYPE_SETTINGS;
