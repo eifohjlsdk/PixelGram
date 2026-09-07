@@ -111,6 +111,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int gateThresholdRow;
     private int speechEnhancementRow;
     private int denoiserStrengthRow;
+    private int trebleTiltRow;
     // Voice messages only - see audio.c's initRecorder()/FINDINGS.md's Opus encoder
     // configuration section. Round video's audio path is AAC/MediaCodec, unrelated to these.
     private int opusApplicationRow;
@@ -201,6 +202,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
         gateThresholdRow = rowCount++;
         speechEnhancementRow = rowCount++;
         denoiserStrengthRow = rowCount++;
+        trebleTiltRow = rowCount++;
         opusApplicationRow = rowCount++;
         opusBitrateRow = rowCount++;
         divider3Row = rowCount++;
@@ -358,6 +360,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 showSpeechEnhancementDialog();
             } else if (position == denoiserStrengthRow) {
                 showDenoiserStrengthDialog();
+            } else if (position == trebleTiltRow) {
+                showTrebleTiltDialog();
             } else if (position == opusApplicationRow) {
                 showOpusApplicationDialog();
             } else if (position == opusBitrateRow) {
@@ -615,6 +619,21 @@ public class PixelGramSettingsActivity extends BaseFragment {
             listAdapter.notifyItemChanged(denoiserStrengthRow);
         });
         showDialog(builder.create());
+    }
+
+    /** High-shelf boost above ~4kHz - see TrebleTiltProcessor's class doc and FINDINGS.md's
+     * audio comparison entries for what this is compensating. A few fixed strengths meant for
+     * A/B comparison by ear, not one precisely-correct value. */
+    private void showTrebleTiltDialog() {
+        String[] names = {"Off (default)", "Low (+2dB)", "Medium (+4dB)", "High (+6dB)"};
+        int[] values = {
+                PixelGramSettings.TREBLE_TILT_OFF,
+                PixelGramSettings.TREBLE_TILT_LOW,
+                PixelGramSettings.TREBLE_TILT_MEDIUM,
+                PixelGramSettings.TREBLE_TILT_HIGH
+        };
+        boolean[] supported = {true, true, true, true};
+        showModeDialog("Treble Tilt", names, values, supported, trebleTiltRow, PixelGramSettings::setTrebleTiltMode);
     }
 
     /** Voice-message Opus encoder application mode - see audio.c/FINDINGS.md's Opus encoder
@@ -920,6 +939,15 @@ public class PixelGramSettingsActivity extends BaseFragment {
         return Math.round(wet * 100) + "% wet";
     }
 
+    private static String trebleTiltName(int mode) {
+        switch (mode) {
+            case PixelGramSettings.TREBLE_TILT_LOW: return "Low (+2dB)";
+            case PixelGramSettings.TREBLE_TILT_MEDIUM: return "Medium (+4dB)";
+            case PixelGramSettings.TREBLE_TILT_HIGH: return "High (+6dB)";
+            default: return "Off";
+        }
+    }
+
     private static String opusApplicationName(int mode) {
         return mode == PixelGramSettings.OPUS_APPLICATION_VOIP ? "VOIP" : "Audio";
     }
@@ -991,6 +1019,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == micFieldDimensionRow && PixelGramSettings.isMicFieldDimensionSupported())
                     || pos == voiceIsolationRow || pos == gateThresholdRow
                     || pos == speechEnhancementRow || pos == denoiserStrengthRow
+                    || pos == trebleTiltRow
                     || pos == opusApplicationRow || pos == opusBitrateRow
                     || pos == resetRow || pos == checkNowRow;
         }
@@ -1108,6 +1137,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndValue("Speech Enhancement", speechEnhancementName(PixelGramSettings.getSpeechEnhancementMode()), true);
                     } else if (position == denoiserStrengthRow) {
                         cell.setTextAndValue("Denoiser Strength", formatDenoiserStrength(PixelGramSettings.getSpeechEnhancementWetFraction()), true);
+                    } else if (position == trebleTiltRow) {
+                        cell.setTextAndValue("Treble Tilt", trebleTiltName(PixelGramSettings.getTrebleTiltMode()), true);
                     } else if (position == opusApplicationRow) {
                         cell.setTextAndValue("Opus Application Mode", opusApplicationName(PixelGramSettings.getOpusApplicationMode()), true);
                     } else if (position == opusBitrateRow) {

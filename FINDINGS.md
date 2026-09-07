@@ -3278,3 +3278,57 @@ low-pass cascade and gate both dropped - the lower-risk option, most of the DSP 
 and is proven; (b) a high-shelf boost above roughly 4-6kHz to directly address the treble
 deficit - genuinely new code, unimplemented, higher effort. Neither built this turn per
 instruction.
+
+## Antibanding pinned to AUTO; Treble Tilt setting added; Adaptive Gain "expander" ask - correction, no code change there (2026-09-07)
+
+Implements the three items requested off the AE-asymmetry/audio investigation above.
+
+**Antibanding -> AUTO.** Checked first: this codebase never set `CONTROL_AE_ANTIBANDING_MODE` to
+50Hz or anything else - grepped the whole `camera` package and the rest of `TMessagesProj`, no
+match anywhere. Whatever fixed-50Hz behavior was observed was the HAL's own default, not
+something our capture request pinned. Fixed anyway, and the fix is the same regardless of which
+it was: `Camera2Session` now explicitly sets `CONTROL_AE_ANTIBANDING_MODE_AUTO` on every video
+capture request (checked against `CONTROL_AE_AVAILABLE_ANTIBANDING_MODES` first, same
+`checkModeSupport` pattern as every other capability check in this class), rather than leaving
+the key untouched and trusting whatever the HAL's own default is for a given
+region/build - the same "don't trust the HAL default" reasoning already applied to
+`CONTROL_ZOOM_RATIO` and `CONTROL_AE_REGIONS`.
+
+**Adaptive Gain "expander" - corrected, nothing changed in `AdaptiveGainProcessor`.** Re-verified
+before touching anything: `AdaptiveGainProcessor` has no expander. It has a leveler
+(`slowGainDb`, frozen - not reduced - during silence) and a limiter (releases toward unity, never
+below, when the buffer is quiet). Traced the whole class again to be certain. The only downward-
+expander gate anywhere in this codebase is `VoiceIsolationProcessor`'s (`VOICE_ISOLATION_BANDPASS_GATE`
+mode) - and it's already optional and already off by default (`DEFAULT_VOICE_ISOLATION_MODE =
+VOICE_ISOLATION_OFF`), independently of Adaptive Gain, confirmed on-device in the entry above.
+Implementing "make the expander optional, default off" against `AdaptiveGainProcessor` would have
+been a no-op against a mechanism that isn't there; against `VoiceIsolationProcessor` it's already
+true today. Flagging this rather than shipping a change that wouldn't do anything - if the actual
+goal is closing out the digital-silence artifact traced in the entry above (the AAC-encoder
+floor effect), that's a different, not-yet-implemented change (e.g. a small silence-time gain
+floor in `AdaptiveGainProcessor`, or a bitrate increase) which wasn't part of this request.
+
+**Treble Tilt.** New `TrebleTiltProcessor` (mirrors `VoiceIsolationProcessor`'s
+process()/processFloat() split and per-recording lifecycle) - a single RBJ Audio EQ Cookbook
+high-shelf biquad, corner at 4kHz (the lower edge of the "high" band FINDINGS.md's audio
+comparisons already measure), shelf slope S=1 (gentle, no resonant peak, same maximally-flat
+philosophy as the existing high-pass). Three fixed strengths - Low/Medium/High = +2/+4/+6dB
+- meant for A/B comparison against the iPhone by ear, not one computed "correct" value, per
+request. New `PixelGramSettings.getTrebleTiltMode()`/`TREBLE_TILT_OFF/LOW/MEDIUM/HIGH`, default
+OFF, with a Settings row ("Treble Tilt", under Audio) and a `trebleTilt:` field added to the
+per-recording marker line.
+
+Placement in the chain matters and was chosen deliberately: `SpeechEnhancer` (RNNoise) ->
+`VoiceIsolationProcessor` -> **`TrebleTiltProcessor`** -> `AdaptiveGainProcessor` (or the fixed-
+multiplier + soft limiter when Adaptive Gain is off). Running it *before* whichever limiter runs
+last means any peak increase the shelf boost introduces is automatically caught by existing,
+already-tested limiting rather than needing its own - `TrebleTiltProcessor` does no limiting or
+clamping of its own, same convention as every other stage in this chain.
+
+Verified the shelf's actual frequency response against the RBJ formula in an isolated Python
+check (not just trusting the algebra): flat below ~1kHz, half the configured gain at the 4kHz
+corner, ~95% of the configured gain by 8kHz, full gain by ~20kHz, for all three strengths -
+behaves as a real shelf, not a peak or a full-band gain.
+
+Compiled clean (`:TMessagesProj_App:compileAfatDebugJavaWithJavac`). Not yet measured against
+the iPhone comparison - that's the next natural step once a strength is picked to test.

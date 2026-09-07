@@ -70,6 +70,16 @@ public class PixelGramSettings {
     public static final int SPEECH_ENHANCEMENT_OFF = 0;
     public static final int SPEECH_ENHANCEMENT_RNNOISE = 1;
 
+    /** Optional high-shelf boost above ~4kHz - see TrebleTiltProcessor. Runs after Voice
+     * Isolation and before Adaptive Gain/the fixed-multiplier limiter, so any peak increase it
+     * introduces is caught by whichever limiter runs last. A few fixed strengths rather than a
+     * continuous control, meant for A/B comparison against the iPhone (see FINDINGS.md's audio
+     * entries) rather than one precisely-correct value. Off by default. */
+    public static final int TREBLE_TILT_OFF = 0;
+    public static final int TREBLE_TILT_LOW = 1;
+    public static final int TREBLE_TILT_MEDIUM = 2;
+    public static final int TREBLE_TILT_HIGH = 3;
+
     /** Wet/dry blend applied after RNNoise, before Voice Isolation - see SpeechEnhancer.process().
      * 100% is pure RNNoise output; anything less mixes back a fraction of the original signal, so
      * content RNNoise fully suppresses (background music, misclassified quiet word-endings/breath)
@@ -146,6 +156,7 @@ public class PixelGramSettings {
     private static final String KEY_VOICE_ISOLATION_MODE = "voice_isolation_mode";
     private static final String KEY_SPEECH_ENHANCEMENT_MODE = "speech_enhancement_mode";
     private static final String KEY_SPEECH_ENHANCEMENT_WET = "speech_enhancement_wet";
+    private static final String KEY_TREBLE_TILT_MODE = "treble_tilt_mode";
     private static final String KEY_GATE_THRESHOLD_DB = "voice_isolation_gate_threshold_db";
     private static final String KEY_DOWNSCALE_FILTER = "downscale_filter_mode";
     private static final String KEY_DITHER_AMOUNT_LSB = "dither_amount_lsb";
@@ -313,6 +324,10 @@ public class PixelGramSettings {
     // as more of the raw (undenoised) signal is blended back in. See FINDINGS.md's speech
     // enhancement section.
     public static final float DEFAULT_SPEECH_ENHANCEMENT_WET = 0.8f;
+    // Off by default (2026-09-07) - a new, unmeasured-on-device option, and the treble deficit
+    // it targets is modest (see FINDINGS.md's audio comparison entries), not something to turn
+    // on unasked.
+    public static final int DEFAULT_TREBLE_TILT_MODE = TREBLE_TILT_OFF;
     public static final int DEFAULT_DOWNSCALE_FILTER = DOWNSCALE_FILTER_LANCZOS;
     // In multiples of 1/255 (one 8-bit LSB), applied as +-0.5x this value. 0 = off. Defaulted to
     // off (2026-09-05, see FINDINGS.md's "Dither default moved to off" note) - higher dither
@@ -795,6 +810,14 @@ public class PixelGramSettings {
         prefs().edit().putFloat(KEY_SPEECH_ENHANCEMENT_WET, wet).apply();
     }
 
+    public static int getTrebleTiltMode() {
+        return getIntSetting(KEY_TREBLE_TILT_MODE, DEFAULT_TREBLE_TILT_MODE);
+    }
+
+    public static void setTrebleTiltMode(int mode) {
+        prefs().edit().putInt(KEY_TREBLE_TILT_MODE, mode).apply();
+    }
+
     public static float getVoiceIsolationGateThresholdDb() {
         return getFloatSetting(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB);
     }
@@ -916,6 +939,7 @@ public class PixelGramSettings {
                 .putFloat(KEY_GATE_THRESHOLD_DB, DEFAULT_GATE_THRESHOLD_DB)
                 .putInt(KEY_SPEECH_ENHANCEMENT_MODE, DEFAULT_SPEECH_ENHANCEMENT_MODE)
                 .putFloat(KEY_SPEECH_ENHANCEMENT_WET, DEFAULT_SPEECH_ENHANCEMENT_WET)
+                .putInt(KEY_TREBLE_TILT_MODE, DEFAULT_TREBLE_TILT_MODE)
                 .putInt(KEY_DOWNSCALE_FILTER, DEFAULT_DOWNSCALE_FILTER)
                 .putFloat(KEY_DITHER_AMOUNT_LSB, DEFAULT_DITHER_AMOUNT_LSB)
                 .apply();

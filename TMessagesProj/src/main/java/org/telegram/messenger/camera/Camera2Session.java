@@ -84,6 +84,7 @@ public class Camera2Session {
     private boolean lowLightBoostSupported;
     private boolean previewStabilizationSupported;
     private boolean faceDetectFullSupported;
+    private boolean antibandingAutoSupported;
     private int[] availableNoiseReductionModes = new int[0];
     private int[] availableEdgeModes = new int[0];
     private int[] availableTonemapModes = new int[0];
@@ -240,6 +241,7 @@ public class Camera2Session {
             opticalStabilizationSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON, "LENS_OPTICAL_STABILIZATION_MODE_ON");
             lowLightBoostSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES, CameraMetadata.CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY, "CONTROL_AE_MODE_ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY");
             faceDetectFullSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES, CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL, "STATISTICS_FACE_DETECT_MODE_FULL");
+            antibandingAutoSupported = checkModeSupport(cameraCharacteristics, cameraId, isFront, CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES, CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO, "CONTROL_AE_ANTIBANDING_MODE_AUTO");
             availableNoiseReductionModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES);
             availableEdgeModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
             availableTonemapModes = queryAvailableModes(cameraCharacteristics, CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES);
@@ -884,6 +886,21 @@ public class Camera2Session {
                     captureRequestBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetFpsRange);
                 }
                 captureRequestBuilder.set(CaptureRequest.CONTROL_CAPTURE_INTENT, CaptureRequest.CONTROL_CAPTURE_INTENT_VIDEO_RECORD);
+
+                // Explicit AUTO, not left at whatever the HAL defaults to - same "don't trust the
+                // HAL default" reasoning as CONTROL_ZOOM_RATIO/CONTROL_AE_REGIONS below. A fixed
+                // 50Hz or 60Hz antibanding mode only rejects flicker at that one line frequency
+                // and can beat against a display or light actually running at the other one (or
+                // against a DC/LED source with no line-frequency flicker to reject at all) - AUTO
+                // lets the HAL detect and adapt to the actual light source instead of assuming a
+                // fixed one.
+                if (antibandingAutoSupported) {
+                    try {
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO);
+                    } catch (Exception e) {
+                        PixelCameraLog.w("camera #" + cameraId + ": CONTROL_AE_ANTIBANDING_MODE set failed", e);
+                    }
+                }
 
                 if (afContinuousVideoSupported) {
                     try {

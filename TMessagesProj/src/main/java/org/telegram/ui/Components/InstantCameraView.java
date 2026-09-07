@@ -100,6 +100,7 @@ import org.telegram.messenger.camera.Size;
 import org.telegram.messenger.camera.AdaptiveGainProcessor;
 import org.telegram.messenger.camera.SpeechEnhancer;
 import org.telegram.messenger.camera.VoiceIsolationProcessor;
+import org.telegram.messenger.camera.TrebleTiltProcessor;
 import org.telegram.messenger.video.MP4Builder;
 import org.telegram.messenger.video.Mp4Movie;
 import org.telegram.tgnet.ConnectionsManager;
@@ -2475,6 +2476,10 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
         // mic-gain multiplier outright when active, applied at the same point in the chain - see
         // AdaptiveGainProcessor's class doc.
         private AdaptiveGainProcessor adaptiveGainProcessor;
+        // Fresh per recording, same lifecycle/reasoning as voiceIsolationProcessor above. Runs
+        // after voiceIsolationProcessor and before adaptiveGainProcessor/applyMicGain - see
+        // TrebleTiltProcessor's class doc for why that ordering matters.
+        private TrebleTiltProcessor trebleTiltProcessor;
         // Set in prepareEncoder() based on which encoding the AudioRecord constructor actually
         // accepted - ENCODING_PCM_FLOAT is preferred (see FINDINGS.md's audio input-capability
         // investigation) but isn't universally guaranteed for the record direction the way it is
@@ -2553,6 +2558,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                                 if (voiceIsolationProcessor != null) {
                                     voiceIsolationProcessor.processFloat(byteBuffer, readResult);
                                 }
+                                if (trebleTiltProcessor != null) {
+                                    trebleTiltProcessor.processFloat(byteBuffer, readResult);
+                                }
                                 // Adaptive Gain replaces the fixed multiplier outright when on -
                                 // see AdaptiveGainProcessor's class doc - rather than stacking
                                 // with it.
@@ -2566,6 +2574,9 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             } else {
                                 if (voiceIsolationProcessor != null) {
                                     voiceIsolationProcessor.process(byteBuffer, readResult);
+                                }
+                                if (trebleTiltProcessor != null) {
+                                    trebleTiltProcessor.process(byteBuffer, readResult);
                                 }
                                 PixelGramSettings.applyMicGain(byteBuffer, readResult);
                             }
@@ -3848,6 +3859,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                 audioBytesPerSample = audioCaptureIsFloat ? 4 : 2;
                 PixelCameraLog.d("round-video audio capture format: " + (audioCaptureIsFloat ? "PCM_FLOAT" : "PCM_16BIT (fallback)"));
                 voiceIsolationProcessor = new VoiceIsolationProcessor(audioSampleRate);
+                trebleTiltProcessor = new TrebleTiltProcessor(audioSampleRate);
                 // Only constructed when float capture actually took (RNNoise needs float
                 // samples - see SpeechEnhancer's class doc) and the setting is on. No
                 // isAvailable() check needed unlike the platform AudioEffects below - RNNoise is
@@ -4034,7 +4046,8 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")"
                             + " voiceIsolation:" + PixelGramSettings.getVoiceIsolationMode() + " gateThreshold:" + PixelGramSettings.getVoiceIsolationGateThresholdDb()
                             + " speechEnhancement:" + (speechEnhancer != null ? PixelGramSettings.getSpeechEnhancementMode() : "off(unavailable)")
-                            + " denoiserWet:" + PixelGramSettings.getSpeechEnhancementWetFraction());
+                            + " denoiserWet:" + PixelGramSettings.getSpeechEnhancementWetFraction()
+                            + " trebleTilt:" + PixelGramSettings.getTrebleTiltMode());
                 }
 
                 AndroidUtilities.runOnUIThread(() -> {
