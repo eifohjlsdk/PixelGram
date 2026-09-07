@@ -488,6 +488,22 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
     @SuppressLint("ClickableViewAccessibility")
     public InstantCameraView(Context context, Delegate delegate, Theme.ResourcesProvider resourcesProvider, boolean isNewDesign) {
         super(context);
+        if (!useCamera2) {
+            // useCamera2 is snapshotted once above from SharedConfig.isUsingCamera2() and never
+            // re-read for the life of this view, so this fires once per round-camera open, not
+            // per frame. Loud on purpose (PixelCameraLog.w always reaches logcat regardless of
+            // isDebugLoggingEnabled()): this toggle lives in a debug settings row with no camera
+            // UI indicator, and every Camera2Session-only fix - CONTROL_ZOOM_RATIO pin,
+            // CONTROL_AE_TARGET_FPS_RANGE pin, face-anchored CONTROL_AE_REGIONS, noise
+            // reduction/edge/tonemap modes, exposure compensation - silently does not apply on
+            // the legacy Camera1 fallback this takes instead. It's exactly the kind of
+            // invisible-pipeline-swap that made a real zoom-jump regression look like a code
+            // regression when it was actually this setting having reset to off.
+            PixelCameraLog.w("round camera: Camera2 API is OFF (SharedConfig.isUsingCamera2=false) - " +
+                    "falling back to legacy Camera1 for this recording. CONTROL_ZOOM_RATIO pin, " +
+                    "CONTROL_AE_TARGET_FPS_RANGE pin, face-AE regions, noise reduction/edge/tonemap " +
+                    "modes and exposure compensation do NOT apply on this path.");
+        }
         buttonsSizePx = dp(isNewDesign ? 24 : 28);
 
         WRITE_TO_FILE_IN_BACKGROUND = false;//SharedConfig.deviceIsAboveAverage();
@@ -3993,6 +4009,14 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                     mediaMuxer.setAllowSyncFiles(allowSendingWhileRecording = SharedConfig.deviceIsHigh());
 
                     PixelCameraLog.marker("round video " + videoWidth + "x" + videoHeight
+                            // Which capture pipeline actually produced this recording - Camera2Session
+                            // (all the NR/edge/tonemap/ev/zoom-pin/fps-pin/face-AE fields further down
+                            // this line only ever apply under "2") or the legacy Camera1 fallback taken
+                            // when the "Use Camera 2 API" setting is off. Without this field the rest of
+                            // this line reads the same either way, even though half of it silently
+                            // stopped applying - which is exactly how a Camera2-off regression got
+                            // mistaken for a code regression before this was added.
+                            + " cameraApi:" + (useCamera2 ? "2" : "1(fallback)")
                             + " capture:" + (previewSize[0] != null ? previewSize[0].getWidth() + "x" + previewSize[0].getHeight() : "?")
                             + " supersample:" + shouldSupersampleDownscale(previewSize[0])
                             + " downscaleFilter:" + PixelGramSettings.getDownscaleFilter() + " dither:" + PixelGramSettings.getDitherAmountLsb() + "xLSB"

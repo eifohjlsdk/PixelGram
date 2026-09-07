@@ -2845,3 +2845,62 @@ clamp model the defect costs throughput, not sample correctness, so it isn't yet
 is the *entire* explanation for the erratic-noise-burst shape observed rather than only part
 of it. Verification pending a fresh recording on the fixed build, checked for discontinuities
 at the 20ms (960-sample, one Opus frame) boundary specifically rather than by ear.
+
+## v1.1.1 zoom-jump regression, actual root cause: Camera2 toggle silently reset to Camera1 (2026-09-07)
+
+Supersedes the "no settings mismatch found" conclusion two sections up - that audit was real
+and its fix (loud logging on `updateCaptureRequest()`'s swallowed exceptions) stands on its
+own merits, but it wasn't the mechanism behind the zoom jump actually observed. The real
+cause: stock Telegram's "Use Camera 2 API" debug setting
+(`SharedConfig.isUsingCamera2()`/`useCamera2Force`, `SettingsActivity`/`ProfileActivity` debug
+rows) got reset to off by the Firebase-forced re-login, on both the beta and release installs,
+and went unnoticed. `InstantCameraView.useCamera2` snapshots that setting once per view
+construction (`InstantCameraView.java:193`) and never re-reads it, so an unknown span of
+recent round-video testing ran entirely through the legacy Camera1 path instead of Camera2.
+
+**What Camera1 fallback actually means for this fork.** `useCamera2` gates every
+`Camera2Session` call site in `InstantCameraView.java` (session creation, `open()`,
+`updateCaptureRequest()`'s trigger points); when it's false the view instead uses the
+deprecated `initCamera()`/`CameraSession`/`CameraController` Camera1 path, which predates this
+fork and has none of our capture-request logic. Concretely, with Camera2 off:
+- **Does not apply at all**, because the code that would apply it lives only in
+  `Camera2Session.java` and simply never runs: the `CONTROL_ZOOM_RATIO` pin, the
+  `CONTROL_AE_TARGET_FPS_RANGE` pin, face-anchored `CONTROL_AE_REGIONS`, noise reduction mode,
+  edge mode, tonemap mode, and exposure compensation EV.
+- **Still applies**, because it's downstream of the captured preview frames and doesn't care
+  which camera API produced them: the GL shader supersample/downscale/dither pipeline, video
+  encoder bitrate/profile/level, and the entire audio path (mic gain, voice isolation, speech
+  enhancement, echo cancellation, AGC, noise suppression).
+- **Applies differently than configured**: capture resolution. Camera2 sizes its session from
+  `PixelGramSettings.getResolution()` directly; Camera1's `chooseOptimalSize()` instead picks
+  from the device's advertised preview sizes capped by its own independent
+  `allowBigSizeCamera()`-based ceiling (1440 or 1200px), ignoring the resolution setting
+  entirely.
+
+This means every measurement in the two sections above the "no settings mismatch" one -
+including the zoom-pin verification itself - could have silently been exercising Camera1 the
+whole time if the toggle had already reset before that testing, which would explain a
+"regression" that no Camera2-side code change could have caused or fixed.
+
+**Why not just force Camera2 on unconditionally.** The toggle is stock Telegram's own escape
+hatch, not fork-added - it exists because Camera2 support is genuinely inconsistent across
+devices (`LEGACY`-level hardware, HALs with broken or partial Camera2 implementations). Hard
+requiring it would trade an invisible fallback on this dev's own device for a hard failure on
+whichever real-world device actually needs the fallback, which is worse, not better. Two
+narrower fixes landed instead, matching the "loud instead of silent" pattern already used
+elsewhere in this file:
+- `InstantCameraView`'s constructor now calls `PixelCameraLog.w(...)` once, unconditionally,
+  whenever it's built with Camera2 off - always reaches logcat regardless of
+  `isDebugLoggingEnabled()`, so the fallback is visible the moment the round camera opens, not
+  just inferable after the fact from a recording.
+- The per-recording marker line (`InstantCameraView.java`, `PixelCameraLog.marker(...)`) gained
+  a `cameraApi:2` / `cameraApi:1(fallback)` field. Previously the marker printed
+  `nr:`/`edge:`/`tonemap:`/`ev:` (and the zoom/fps pins, not logged on this line at all) with
+  no indication that all of them were no-ops on this specific recording - the line looked
+  identical whether or not any of it actually reached the camera. Every future recording's
+  marker line now settles which pipeline produced it without needing a separate check.
+
+No in-UI indicator (toast/badge in the round-camera view itself) was added - that's a real
+option if the log-only signal proves insufficient in practice, but it's a user-facing change
+to a stock Telegram surface rather than a diagnostics-only one, so it wasn't made unilaterally
+here.
