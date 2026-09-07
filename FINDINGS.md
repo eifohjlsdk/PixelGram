@@ -3431,3 +3431,56 @@ cleanly back toward 0 once speech resumes, no gain left stuck on. Added `silence
 `micGain:` marker-line field so a recording's floor state is visible after the fact. Compiled
 clean. Not yet measured against a real recording - that's the natural next A/B (floor on vs. off,
 same walk, checking whether the room tone survives encoding this time) once one is taken.
+
+## Quiet-start fix: Option B chosen over Option C, after the sync question checked out but a different risk didn't (2026-09-07)
+
+The leveler starts every recording at `slowGainDb=0` (unity) and ramps toward its target, making
+the first second or so of every clip audibly quiet. Two options were reported: (A) remember last
+recording's converged gain, (B) start from a fixed configured gain, (C) buffer the opening and
+apply the real converged gain retroactively before encoding - "the proper fix," per the request,
+since these are recorded files and latency costs nothing.
+
+**Correction to how the leveler's own attack/release actually behaves at a cold start**, found
+while re-checking before answering the sync question: `neededGainDb < slowGainDb ? ATTACK :
+RELEASE` picks by *direction*, not by "is this the start." At `slowGainDb=0`, real speech almost
+always needs *more* gain (`neededGainDb > 0`), which is the RELEASE branch (1.2s default) - not
+the faster attack (0.4s). The quiet window is governed by the slower constant, so it's a bit
+longer in practice than "0.4s attack" implies.
+
+**The A/V sync question for Option C - checked directly against the code, not reasoned in the
+abstract**: every audio chunk gets its presentation timestamp
+(`audioRecorder.getTimestamp(...)`) captured immediately after `read()` and stored on the
+buffer (`buffer.offset[a]`) - independent of when that buffer is later hand ed to the encoder.
+`handleAudioFrameAvailable()` (encoder thread) only ever reads that stored value, never
+re-stamps with "now." The desync correction (`desyncTime = videoFirst - input.offset[a]`) is
+timestamp-*value*-based too, not arrival-order-based. Video's own timestamps come from
+`SurfaceTexture.getTimestamp()` on an entirely separate, callback-driven thread that has never
+waited on audio and wouldn't need to for this. **Conclusion: holding audio buffers longer
+before encoding does not, by itself, put A/V sync at risk** - confirmed by reading the exact
+capture and dispatch code, not inferred.
+
+**But designing the concrete implementation surfaced a different, real risk**: Option C's
+hold-then-correct logic has to live around `handleAudioFrameAvailable`'s existing
+`buffersToWrite` queue, and that queue's finalization already carries the project's hardest-won
+correctness work (the A/V drift investigation, the stock-upstream unit-mismatch bug, the 60s
+stop-condition dead-code bug all live in the exact same few hundred lines). A hold-until-resolved
+gate has to be force-released whenever recording stops before the gate would naturally resolve
+(a short clip, or a leading pause before anyone speaks) - solvable, but new surface directly
+adjacent to that fragile finalization path, needing dedicated testing across short clips,
+pause-during-cold-start, and stop-during-cold-start to ship responsibly.
+
+**Decision: Option B**, not because the sync check failed - it didn't - but because C's real
+remaining cost turned out to be finalization-edge-case risk in the one subsystem most worth being
+conservative about, for a benefit (a few hundred ms of more precisely correct gain) that's real
+but modest next to that cost.
+
+**Implemented**: `AdaptiveGainProcessor`'s `slowGainDb` now seeds from
+`PixelGramSettings.getAdaptiveGainInitialMultiplier()` (new setting, "Adaptive Gain Initial
+Level" row, values 1x/2x/3x/4x/5x, **default 3x** per request - not off/1x like this session's
+other new settings, since this directly replaces a reported problem rather than adding new,
+unmeasured behavior; "roughly where recordings settle" per the request). 1x is offered in the
+picker to revert to exactly today's cold-start-from-unity behavior for comparison. Nothing else
+in the class changed - the normal per-buffer attack/release convergence proceeds identically
+after the seed, so a loud passage later in the clip (a car passing at 5s, say) is handled by the
+exact same, unmodified code path as before. Added `initial:` to the `micGain:` marker field.
+Compiled clean.

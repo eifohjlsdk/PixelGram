@@ -144,6 +144,7 @@ public class PixelGramSettings {
     // multiplier outright when enabled - see AdaptiveGainProcessor's class doc.
     private static final String KEY_ADAPTIVE_GAIN_ENABLED = "adaptive_gain_enabled";
     private static final String KEY_ADAPTIVE_GAIN_SILENCE_FLOOR_ENABLED = "adaptive_gain_silence_floor_enabled";
+    private static final String KEY_ADAPTIVE_GAIN_INITIAL_MULTIPLIER = "adaptive_gain_initial_multiplier";
     private static final String KEY_ADAPTIVE_GAIN_TARGET_DB = "adaptive_gain_target_db";
     // Slow-leveler time constants, adjustable per the 2026-09-05 pumping-vs-convergence report
     // (see FINDINGS.md): the 1.0s/4.0s defaults below don't fully converge within a typical
@@ -290,6 +291,24 @@ public class PixelGramSettings {
     // change to it - see AdaptiveGainProcessor's class doc and FINDINGS.md's "AAC digital-silence
     // floor" entries for what this does and why -60dBFS.
     public static final boolean DEFAULT_ADAPTIVE_GAIN_SILENCE_FLOOR = false;
+    // What slowGainDb starts at (converted to dB internally), instead of unity (0dB/1x) - see
+    // AdaptiveGainProcessor's class doc. Defaults to 3x (2026-09-07), not off/1x like this
+    // session's other new settings - this one directly replaces a real, reported problem (the
+    // leveler's cold-start ramp leaving the first second or so of every clip audibly quiet)
+    // rather than adding new, unmeasured behavior, and 3x was given as roughly where real
+    // recordings settle. 1x is still offered in the picker to revert to today's behavior for
+    // comparison. Considered and rejected: buffering the opening and computing the real starting
+    // gain from it before encoding (letting the very first sample already be correctly leveled,
+    // rather than guessing at one fixed value) - safe with respect to A/V timestamps (each
+    // buffer's timestamp is captured at read time and stored on it independent of when it's
+    // encoded, confirmed by reading the capture-thread code), but implementing it correctly means
+    // a hold-until-resolved gate in handleAudioFrameAvailable that also has to force-resolve on
+    // recording stop/a short clip so audio can't get stuck unflushed - real new surface in the
+    // audio pipeline's finalization path, which sits right next to the A/V drift/stop-condition
+    // bugs already fixed in this file. Not worth that risk for what's ultimately a sub-second
+    // cosmetic improvement over this simpler fix.
+    public static final float DEFAULT_ADAPTIVE_GAIN_INITIAL_MULTIPLIER = 3f;
+    public static final float[] ADAPTIVE_GAIN_INITIAL_MULTIPLIER_VALUES = {1f, 2f, 3f, 4f, 5f};
     // RMS target for the slow leveler. -20dBFS is a conventional speech-leveling target
     // (comfortable headroom under the -3dBFS peak ceiling); adjustable per request.
     public static final float DEFAULT_ADAPTIVE_GAIN_TARGET_DB = -20f;
@@ -636,6 +655,14 @@ public class PixelGramSettings {
         prefs().edit().putBoolean(KEY_ADAPTIVE_GAIN_SILENCE_FLOOR_ENABLED, enabled).apply();
     }
 
+    public static float getAdaptiveGainInitialMultiplier() {
+        return getFloatSetting(KEY_ADAPTIVE_GAIN_INITIAL_MULTIPLIER, DEFAULT_ADAPTIVE_GAIN_INITIAL_MULTIPLIER);
+    }
+
+    public static void setAdaptiveGainInitialMultiplier(float multiplier) {
+        prefs().edit().putFloat(KEY_ADAPTIVE_GAIN_INITIAL_MULTIPLIER, multiplier).apply();
+    }
+
     public static float getAdaptiveGainTargetDb() {
         return getFloatSetting(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB);
     }
@@ -944,6 +971,7 @@ public class PixelGramSettings {
                 .putInt(KEY_MIC_GAIN_VOICE_MESSAGE, DEFAULT_MIC_GAIN_VOICE_MESSAGE)
                 .putBoolean(KEY_ADAPTIVE_GAIN_ENABLED, DEFAULT_ADAPTIVE_GAIN)
                 .putBoolean(KEY_ADAPTIVE_GAIN_SILENCE_FLOOR_ENABLED, DEFAULT_ADAPTIVE_GAIN_SILENCE_FLOOR)
+                .putFloat(KEY_ADAPTIVE_GAIN_INITIAL_MULTIPLIER, DEFAULT_ADAPTIVE_GAIN_INITIAL_MULTIPLIER)
                 .putFloat(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB)
                 .putFloat(KEY_ADAPTIVE_GAIN_SLOW_ATTACK_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC)
                 .putFloat(KEY_ADAPTIVE_GAIN_SLOW_RELEASE_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC)

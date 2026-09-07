@@ -99,6 +99,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int echoCancellationRow;
     private int adaptiveGainRow;
     private int adaptiveGainSilenceFloorRow;
+    private int adaptiveGainInitialLevelRow;
     private int adaptiveGainTargetRow;
     private int adaptiveGainAttackRow;
     private int adaptiveGainReleaseRow;
@@ -193,6 +194,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
         echoCancellationRow = rowCount++;
         adaptiveGainRow = rowCount++;
         adaptiveGainSilenceFloorRow = rowCount++;
+        adaptiveGainInitialLevelRow = rowCount++;
         adaptiveGainTargetRow = rowCount++;
         adaptiveGainAttackRow = rowCount++;
         adaptiveGainReleaseRow = rowCount++;
@@ -329,6 +331,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 if (PixelGramSettings.isAdaptiveGainEnabled()) {
                     PixelGramSettings.setAdaptiveGainSilenceFloorEnabled(!PixelGramSettings.isAdaptiveGainSilenceFloorEnabled());
                     ((TextCheckCell) view).setChecked(PixelGramSettings.isAdaptiveGainSilenceFloorEnabled());
+                }
+            } else if (position == adaptiveGainInitialLevelRow) {
+                if (PixelGramSettings.isAdaptiveGainEnabled()) {
+                    showAdaptiveGainInitialLevelDialog();
                 }
             } else if (position == adaptiveGainTargetRow) {
                 if (PixelGramSettings.isAdaptiveGainEnabled()) {
@@ -706,6 +712,24 @@ public class PixelGramSettingsActivity extends BaseFragment {
         showDialog(builder.create());
     }
 
+    /** What the leveler starts at instead of unity - see AdaptiveGainProcessor's class doc. 1x is
+     * offered to revert to the pre-2026-09-07 cold-start-from-unity behavior for comparison. */
+    private void showAdaptiveGainInitialLevelDialog() {
+        float[] values = PixelGramSettings.ADAPTIVE_GAIN_INITIAL_MULTIPLIER_VALUES;
+        CharSequence[] options = new CharSequence[values.length];
+        for (int i = 0; i < values.length; i++) {
+            String label = values[i] == 1f ? "1x (unity, off)" : ((int) values[i]) + "x";
+            options[i] = label + (values[i] == PixelGramSettings.DEFAULT_ADAPTIVE_GAIN_INITIAL_MULTIPLIER ? " (default)" : "");
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+        builder.setTitle("Adaptive Gain Initial Level");
+        builder.setItems(options, (dialog, which) -> {
+            PixelGramSettings.setAdaptiveGainInitialMultiplier(values[which]);
+            listAdapter.notifyItemChanged(adaptiveGainInitialLevelRow);
+        });
+        showDialog(builder.create());
+    }
+
     private void showAdaptiveGainAttackDialog() {
         float[] values = PixelGramSettings.ADAPTIVE_GAIN_SLOW_ATTACK_SEC_VALUES;
         CharSequence[] options = new CharSequence[values.length];
@@ -1019,6 +1043,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == echoCancellationRow && AcousticEchoCanceler.isAvailable())
                     || pos == adaptiveGainRow
                     || (pos == adaptiveGainSilenceFloorRow && PixelGramSettings.isAdaptiveGainEnabled())
+                    || (pos == adaptiveGainInitialLevelRow && PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == adaptiveGainTargetRow && PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == adaptiveGainAttackRow && PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == adaptiveGainReleaseRow && PixelGramSettings.isAdaptiveGainEnabled())
@@ -1110,6 +1135,12 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setTextAndValue("Dither Amount", formatDitherAmount(PixelGramSettings.getDitherAmountLsb()), false);
                     } else if (position == voiceEnhancementRow) {
                         cell.setTextAndValue("Voice Enhancement", voiceEnhancementName(PixelGramSettings.getVoiceEnhancementMode()), true);
+                    } else if (position == adaptiveGainInitialLevelRow) {
+                        boolean enabled = PixelGramSettings.isAdaptiveGainEnabled();
+                        float mult = PixelGramSettings.getAdaptiveGainInitialMultiplier();
+                        cell.setTextAndValue("Adaptive Gain Initial Level" + (enabled ? "" : " (enable Adaptive Gain)"),
+                                (mult == 1f ? "1x (unity, off)" : ((int) mult) + "x"), true);
+                        cell.setAlpha(enabled ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == adaptiveGainTargetRow) {
                         boolean enabled = PixelGramSettings.isAdaptiveGainEnabled();
                         cell.setTextAndValue("Adaptive Gain Target" + (enabled ? "" : " (enable Adaptive Gain)"), formatGateThreshold(PixelGramSettings.getAdaptiveGainTargetDb()) + " RMS", true);

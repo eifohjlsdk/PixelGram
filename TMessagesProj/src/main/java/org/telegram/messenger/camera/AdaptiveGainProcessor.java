@@ -30,11 +30,15 @@ import java.nio.ByteBuffer;
  * ~10ms window is short enough that this hasn't needed finer resolution.
  *
  * Two independently-smoothed gain components, applied together:
- *   - slowGainDb: the leveler. Updated once per buffer (a variable-timestep one-pole toward
- *     whatever gain would bring this buffer's RMS to the target), asymmetric attack/release
- *     (reduces relatively promptly if a passage runs hot, recovers slowly so a brief pause
- *     mid-sentence doesn't get amplified before the next word arrives), frozen entirely during
- *     non-speech so gain doesn't creep up during silence and then overshoot when speech resumes.
+ *   - slowGainDb: the leveler. Starts at PixelGramSettings.getAdaptiveGainInitialMultiplier()
+ *     (default 3x, not unity) rather than a cold 0dB, so the opening of a clip doesn't have to
+ *     ramp up across the first second or so before reaching a reasonable level - the seed value
+ *     only changes where convergence starts from, not how it proceeds: updated once per buffer
+ *     (a variable-timestep one-pole toward whatever gain would bring this buffer's RMS to the
+ *     target), asymmetric attack/release (reduces relatively promptly if a passage runs hot,
+ *     recovers slowly so a brief pause mid-sentence doesn't get amplified before the next word
+ *     arrives), frozen entirely during non-speech so gain doesn't creep up during silence and
+ *     then overshoot when speech resumes.
  *   - limiterGainDb: the peak protector. Smoothed per-sample (fast attack, moderate release,
  *     standard limiter ballistics) toward whatever reduction the current buffer's own peak
  *     requires to stay under the ceiling - this one is not gated on speech/silence, since
@@ -112,6 +116,13 @@ public class AdaptiveGainProcessor {
         this.sampleRate = sampleRate;
         limiterAttackCoef = timeConstantToCoef(LIMITER_ATTACK_MS, sampleRate);
         limiterReleaseCoef = timeConstantToCoef(LIMITER_RELEASE_MS, sampleRate);
+        // Starts from the configured initial level (default 3x - see
+        // PixelGramSettings.getAdaptiveGainInitialMultiplier()'s doc) instead of unity, so the
+        // leveler doesn't have to ramp up from a cold 0dB across the first second or so of every
+        // clip - the normal per-buffer attack/release convergence below is otherwise completely
+        // unaffected by this: it's a different starting point for the exact same one-pole
+        // logic, not a special mode with different behavior.
+        slowGainDb = linearToDb(PixelGramSettings.getAdaptiveGainInitialMultiplier());
     }
 
     /** One-pole smoothing coefficient for a fixed per-sample step at this sample rate - same
