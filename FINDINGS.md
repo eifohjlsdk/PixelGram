@@ -3332,3 +3332,33 @@ behaves as a real shelf, not a peak or a full-band gain.
 
 Compiled clean (`:TMessagesProj_App:compileAfatDebugJavaWithJavac`). Not yet measured against
 the iPhone comparison - that's the next natural step once a strength is picked to test.
+
+## Digital-silence floor: confirmed inherent to AAC encoding at this signal level, not a bitrate problem (2026-09-07)
+
+Follow-up to the noise-floor investigation above, per request: is the AAC-floor effect avoidable
+or inherent. Narrowed the threshold and, critically, **tested whether raising bitrate rescues
+it** - it doesn't.
+
+- Narrowed the collapse threshold at the current 96kbps: -68dBFS input survives encoding (real
+  floor, -90.3dB, not `-inf`); -75dBFS collapses to literal zero. Threshold sits somewhere in
+  that ~7dB window.
+- **Bitrate test**: re-encoded the same -75dBFS signal at 96k/128k/192k/256k. All four - including
+  256kbps, over 2.5x this app's current audio bitrate - still collapsed to literal zero
+  (`Noise floor dB: -inf`). More bits did not rescue it.
+
+This settles the question: the collapse is not primarily a bit-budget/rate-starvation artifact
+(if it were, more bits would have measurably helped). It's the psychoacoustic model deciding
+content at this level is below the threshold worth spending any bits on - a deliberate, by-design
+behavior of lossy perceptual audio coding, not a rate-control side effect. That makes it a
+property of encoding very quiet content losslessly-adjacent at all, not specifically a property
+of *our* 96kbps choice - a genuinely inherent limitation for this codec family, not something a
+bitrate change would fix.
+
+**What's still avoidable, if wanted (not implemented, not requested this round):** since the
+mechanism triggers only when the *pre-encode* signal is already quiet enough, keeping the
+pre-encode floor from ever reaching that level - e.g. a small nonzero minimum gain applied even
+during silence in `AdaptiveGainProcessor` (today it freezes gain rather than reducing it, but
+never lifts a genuinely very-quiet floor either) - would sidestep the effect without needing a
+codec/bitrate change. That's a different kind of fix (change what reaches the encoder, not the
+encoder itself) and remains unconfirmed/untested per the same caveat as last time - no access to
+this device's actual real pre-encode floor level in this investigation.
