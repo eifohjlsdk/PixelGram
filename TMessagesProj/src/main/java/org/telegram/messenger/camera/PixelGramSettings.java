@@ -143,6 +143,7 @@ public class PixelGramSettings {
     // this app's own look-ahead-limiter-based software AGC, replacing the fixed mic-gain
     // multiplier outright when enabled - see AdaptiveGainProcessor's class doc.
     private static final String KEY_ADAPTIVE_GAIN_ENABLED = "adaptive_gain_enabled";
+    private static final String KEY_ADAPTIVE_GAIN_SILENCE_FLOOR_ENABLED = "adaptive_gain_silence_floor_enabled";
     private static final String KEY_ADAPTIVE_GAIN_TARGET_DB = "adaptive_gain_target_db";
     // Slow-leveler time constants, adjustable per the 2026-09-05 pumping-vs-convergence report
     // (see FINDINGS.md): the 1.0s/4.0s defaults below don't fully converge within a typical
@@ -285,6 +286,10 @@ public class PixelGramSettings {
     // see AdaptiveGainProcessor's class doc for the full design and why this relationship was
     // chosen over running both.
     public static final boolean DEFAULT_ADAPTIVE_GAIN = false;
+    // Off by default (2026-09-07) so it's an A/B against the existing behavior, not a silent
+    // change to it - see AdaptiveGainProcessor's class doc and FINDINGS.md's "AAC digital-silence
+    // floor" entries for what this does and why -60dBFS.
+    public static final boolean DEFAULT_ADAPTIVE_GAIN_SILENCE_FLOOR = false;
     // RMS target for the slow leveler. -20dBFS is a conventional speech-leveling target
     // (comfortable headroom under the -3dBFS peak ceiling); adjustable per request.
     public static final float DEFAULT_ADAPTIVE_GAIN_TARGET_DB = -20f;
@@ -623,6 +628,14 @@ public class PixelGramSettings {
         prefs().edit().putBoolean(KEY_ADAPTIVE_GAIN_ENABLED, enabled).apply();
     }
 
+    public static boolean isAdaptiveGainSilenceFloorEnabled() {
+        return getBooleanSetting(KEY_ADAPTIVE_GAIN_SILENCE_FLOOR_ENABLED, DEFAULT_ADAPTIVE_GAIN_SILENCE_FLOOR);
+    }
+
+    public static void setAdaptiveGainSilenceFloorEnabled(boolean enabled) {
+        prefs().edit().putBoolean(KEY_ADAPTIVE_GAIN_SILENCE_FLOOR_ENABLED, enabled).apply();
+    }
+
     public static float getAdaptiveGainTargetDb() {
         return getFloatSetting(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB);
     }
@@ -930,6 +943,7 @@ public class PixelGramSettings {
                 .putInt(KEY_MIC_GAIN, DEFAULT_MIC_GAIN)
                 .putInt(KEY_MIC_GAIN_VOICE_MESSAGE, DEFAULT_MIC_GAIN_VOICE_MESSAGE)
                 .putBoolean(KEY_ADAPTIVE_GAIN_ENABLED, DEFAULT_ADAPTIVE_GAIN)
+                .putBoolean(KEY_ADAPTIVE_GAIN_SILENCE_FLOOR_ENABLED, DEFAULT_ADAPTIVE_GAIN_SILENCE_FLOOR)
                 .putFloat(KEY_ADAPTIVE_GAIN_TARGET_DB, DEFAULT_ADAPTIVE_GAIN_TARGET_DB)
                 .putFloat(KEY_ADAPTIVE_GAIN_SLOW_ATTACK_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_ATTACK_SEC)
                 .putFloat(KEY_ADAPTIVE_GAIN_SLOW_RELEASE_SEC, DEFAULT_ADAPTIVE_GAIN_SLOW_RELEASE_SEC)

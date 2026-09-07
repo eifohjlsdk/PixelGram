@@ -3362,3 +3362,72 @@ never lifts a genuinely very-quiet floor either) - would sidestep the effect wit
 codec/bitrate change. That's a different kind of fix (change what reaches the encoder, not the
 encoder itself) and remains unconfirmed/untested per the same caveat as last time - no access to
 this device's actual real pre-encode floor level in this investigation.
+
+## Second simultaneous comparison pair: antibanding didn't (and wasn't expected to) close the brightening lag; treble tilt inconclusive; digital silence confirmed still present pre-fix (2026-09-07)
+
+New pair (`1788790118284.mp4` PixelGram, `video (1).mp4` iPhone, ~40s, same simultaneous
+walking setup as the first pair, Treble Tilt at Medium). Frame-timing check repeated first
+(same method as before): still rock-steady 30fps throughout, including the dim window - Camera2
+still confirmed active.
+
+**Antibanding vs. the brightening lag**: re-measured the same way as before (90%/10% duration
+crossings on the content-cropped luma trace). Darkening: PixelGram 5.05s vs. iPhone 8.77s -
+PixelGram still faster, by an even wider margin than the first pair. Brightening: PixelGram
+3.43s vs. iPhone 2.33s - PixelGram still slower, by roughly the same (if anything slightly
+larger) gap as before. **The antibanding change did not close this, and it was never expected
+to** - the asymmetry entry above attributed the lag to the HAL's own 3A convergence policy (with
+the fixed-fps pin as a possible amplifier), not to antibanding/flicker rejection, which is an
+unrelated mechanism. Antibanding was fixed on its own merits (a real, independently-motivated
+correctness fix - explicit AUTO instead of trusting the HAL's regional default), not proposed as
+a fix for this. Worth stating plainly since it was asked directly: no, it didn't, and the
+reasoning above already predicted it wouldn't.
+
+**Digital silence**: still present, as expected - this recording predates the silence-floor fix
+below. `Noise floor dB: -inf` (12857 samples) on PixelGram's audio; iPhone's stays a real,
+nonzero -40.5dB. Confirms the earlier finding reproduces on a second, independent recording, not
+a one-off.
+
+**Treble Tilt at Medium (+4dB shelf @ 4kHz) vs. the spectral gap**: inconclusive, and this is a
+methodology problem, not a verdict on the filter. High-band-relative-to-mid-band gap: first pair
+(no tilt) was PixelGram -6.14dB vs. iPhone -4.80dB (PixelGram 1.34dB worse). Second pair (Medium
+tilt on) was PixelGram -6.66dB vs. iPhone -0.75dB - PixelGram looks *unchanged or slightly worse*
+on this metric, and iPhone's own relative-treble figure moved by 4dB between its two,
+independently-recorded takes. That swing on the iPhone side - which has no PixelGram-side change
+that could explain it - is the tell: two different real conversations (different words, different
+distances, different exact background) don't have matched spectra, so a whole-clip band-average
+comparison across two independent recordings can't isolate a 4dB shelf's effect from ordinary
+take-to-take speech-content variance of a similar or larger magnitude. Checked the filter itself
+isn't the problem: re-verified `TrebleTiltProcessor`'s RBJ shelf math in isolation (same check as
+when it was built) - correct response shape and gain at every strength. **Not concluding the
+tilt failed or worked** - concluding this comparison can't tell either way. A clean test needs
+same-content pairs (the same fixed phrase, or ideally tilt on vs. off back-to-back on the same
+walk) rather than two independent conversations.
+
+## Adaptive Gain silence floor implemented as an A/B setting (2026-09-07)
+
+Implements the fix flagged (not built) in the AAC-floor entries above.
+
+`AdaptiveGainProcessor` gains a third, independent, optional gain component -
+`silenceFloorGainDb` - active only during non-speech and only when
+`PixelGramSettings.isAdaptiveGainSilenceFloorEnabled()` (new setting, "Silence Floor" row under
+Adaptive Gain, off by default so it's a real A/B against existing behavior rather than a silent
+change to it). Each non-speech buffer, it computes how much *additional* gain on top of
+`slowGainDb` (already frozen at whatever speech last required) would bring that buffer's raw
+level up to -60dBFS - comfortably above the -60-to-75dBFS collapse range measured and confirmed
+bitrate-independent in the entries above - and eases toward that (2s attack), never past it,
+never reducing anything. Releases back to 0 over 2s once speech resumes, so it can't linger
+audibly into the next sentence. Clamped to the same +18dB (8x) ceiling `slowGainDb` already
+respects - without that, sufficiently deep raw silence could otherwise ask for more gain than
+this class allows anywhere else. Included in the limiter's peak projection alongside the other
+two gain stages, for the same "everything stays under one limiter" safety property already in
+place, even though a buffer quiet enough to need this is never going to be near the ceiling in
+practice.
+
+Verified the ballistics in an isolated Python simulation before shipping (same practice as the
+class's other timing-sensitive logic): -85dBFS raw silence with no prior speech (`slowGainDb=0`)
+rises from -85dB to -63.4dB (above the -68dBFS point already confirmed to survive encoding) by
+3 seconds in, asymptotically approaching but never overshooting the -60dBFS target; releases
+cleanly back toward 0 once speech resumes, no gain left stuck on. Added `silenceFloor:` to the
+`micGain:` marker-line field so a recording's floor state is visible after the fact. Compiled
+clean. Not yet measured against a real recording - that's the natural next A/B (floor on vs. off,
+same walk, checking whether the room tone survives encoding this time) once one is taken.

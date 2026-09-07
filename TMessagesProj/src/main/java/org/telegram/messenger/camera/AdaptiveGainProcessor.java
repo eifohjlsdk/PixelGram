@@ -45,6 +45,13 @@ import java.nio.ByteBuffer;
  * see SpeechEnhancer.getLastVadProbability()'s doc), since a neural VAD can distinguish speech
  * from steady background noise far better than energy alone. Falls back to a simple energy
  * threshold only when Speech Enhancement is off and no RNNoise VAD signal exists at all.
+ *
+ * A third, optional component - silenceFloorGainDb - see PixelGramSettings.isAdaptiveGainSilenceFloorEnabled().
+ * Off by default; when on, adds (never removes) just enough additional gain during non-speech to
+ * keep the signal above AAC's own collapse-to-literal-zero threshold at this app's bitrate (see
+ * FINDINGS.md's "AAC digital-silence floor" entries), attacking/releasing slowly enough to be a
+ * floor rather than an audible event. Independent of slowGainDb - it targets the raw captured
+ * silence level, not the leveler's own (unrelated) speech target.
  */
 public class AdaptiveGainProcessor {
 
@@ -75,6 +82,18 @@ public class AdaptiveGainProcessor {
     // preferred over energy alone when available.
     private static final float VAD_SPEECH_THRESHOLD = 0.5f;
 
+    // Optional silence floor - see isAdaptiveGainSilenceFloorEnabled()'s doc and FINDINGS.md's
+    // "AAC digital-silence floor" entries: measured the encoder's own collapse-to-literal-zero
+    // threshold at roughly -60 to -75dBFS at this app's bitrate, confirmed independent of
+    // bitrate (raising it didn't move the threshold - this really is the codec deciding
+    // sufficiently quiet content isn't worth encoding, not a bit-budget problem). -60dB sits
+    // comfortably above that whole measured range, not just past its lower edge. Attack/release
+    // both slow on purpose - a fast-responding floor would itself sound like an audible "silence
+    // kicks in" event, exactly the kind of artifact this exists to avoid, not introduce.
+    private static final float SILENCE_FLOOR_TARGET_DB = -60f;
+    private static final float SILENCE_FLOOR_ATTACK_SEC = 2f;
+    private static final float SILENCE_FLOOR_RELEASE_SEC = 2f;
+
     // Fallback-only silence floor, used solely when no RNNoise VAD signal exists (Speech
     // Enhancement off). Deliberately simple/conservative - this is a fallback, not the primary
     // mechanism, per the explicit instruction not to guess a replacement for a confirmed-real
@@ -87,6 +106,7 @@ public class AdaptiveGainProcessor {
 
     private float slowGainDb;
     private float limiterGainDb;
+    private float silenceFloorGainDb;
 
     public AdaptiveGainProcessor(int sampleRate) {
         this.sampleRate = sampleRate;
@@ -144,23 +164,46 @@ public class AdaptiveGainProcessor {
                 ? rnnoiseVadProbability >= VAD_SPEECH_THRESHOLD
                 : blockRmsDb >= ENERGY_SILENCE_FLOOR_DB;
 
+        float elapsedSec = sampleCount / (float) sampleRate;
         if (isSpeech) {
             float targetDb = PixelGramSettings.getAdaptiveGainTargetDb();
             float neededGainDb = targetDb - blockRmsDb;
-            float elapsedSec = sampleCount / (float) sampleRate;
             float timeConstant = neededGainDb < slowGainDb
                     ? PixelGramSettings.getAdaptiveGainSlowAttackSec()
                     : PixelGramSettings.getAdaptiveGainSlowReleaseSec();
             float coef = timeConstantToCoefForDuration(timeConstant, elapsedSec);
             slowGainDb += coef * (neededGainDb - slowGainDb);
+            // Silence floor decays back toward 0 while actually speaking, same as it never
+            // engages at all if the setting is off - it should only ever be adding gain during
+            // real silence, not lingering audibly into the next sentence.
+            float releaseCoef = timeConstantToCoefForDuration(SILENCE_FLOOR_RELEASE_SEC, elapsedSec);
+            silenceFloorGainDb += releaseCoef * (0f - silenceFloorGainDb);
+        } else if (PixelGramSettings.isAdaptiveGainSilenceFloorEnabled()) {
+            // How much on top of slowGainDb (already frozen at whatever speech last required)
+            // this buffer's own raw level needs to reach the floor target - never negative, this
+            // only ever adds gain, never removes it. Attacks slowly (see the constants' doc)
+            // rather than snapping straight to the needed value.
+            float neededFloorDb = Math.max(0f, SILENCE_FLOOR_TARGET_DB - blockRmsDb - slowGainDb);
+            float attackCoef = timeConstantToCoefForDuration(SILENCE_FLOOR_ATTACK_SEC, elapsedSec);
+            silenceFloorGainDb += attackCoef * (neededFloorDb - silenceFloorGainDb);
         }
         if (slowGainDb > GAIN_MAX_DB) slowGainDb = GAIN_MAX_DB;
         else if (slowGainDb < GAIN_MIN_DB) slowGainDb = GAIN_MIN_DB;
+        // Same ceiling as slowGainDb, for the same reason - without this, sufficiently deep raw
+        // silence (below GAIN_MAX_DB's own 8x headroom under the target) could ask for more gain
+        // than this class allows anywhere else, turning mic self-noise into audible hiss rather
+        // than a subtle floor.
+        if (silenceFloorGainDb < 0f) silenceFloorGainDb = 0f;
+        else if (silenceFloorGainDb > GAIN_MAX_DB) silenceFloorGainDb = GAIN_MAX_DB;
 
-        // How much extra reduction (on top of slowGainDb) this buffer's own peak requires to
-        // stay under the ceiling - the look-ahead part: computed from the whole buffer before
-        // any of it is written back.
-        float projectedPeakDb = blockPeakDb + slowGainDb;
+        // How much extra reduction (on top of slowGainDb + silenceFloorGainDb) this buffer's own
+        // peak requires to stay under the ceiling - the look-ahead part: computed from the whole
+        // buffer before any of it is written back. silenceFloorGainDb included here too, even
+        // though a buffer quiet enough to need the floor is never going to be anywhere near the
+        // ceiling in practice - this is the same "every gain stage stays under the one limiter"
+        // safety property the rest of this class already relies on, not a change of behavior for
+        // the normal (floor-inactive) case.
+        float projectedPeakDb = blockPeakDb + slowGainDb + silenceFloorGainDb;
         float neededLimiterDb = Math.min(0f, CEILING_DB - projectedPeakDb);
 
         for (int i = 0; i < sampleCount; i++) {
@@ -168,7 +211,7 @@ public class AdaptiveGainProcessor {
             limiterGainDb += limCoef * (neededLimiterDb - limiterGainDb);
             if (limiterGainDb > 0f) limiterGainDb = 0f; // never boost via the limiter
 
-            float totalGain = dbToLinear(slowGainDb + limiterGainDb);
+            float totalGain = dbToLinear(slowGainDb + silenceFloorGainDb + limiterGainDb);
             buffer.putFloat(i * 4, buffer.getFloat(i * 4) * totalGain);
         }
         // Deliberately not clamped to [-1,1] here - same convention as every other stage in this

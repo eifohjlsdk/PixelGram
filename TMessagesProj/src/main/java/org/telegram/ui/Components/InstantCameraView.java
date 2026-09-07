@@ -4041,7 +4041,7 @@ public class InstantCameraView extends FrameLayout implements NotificationCenter
                             + " agc:" + agcActuallyEnabled
                             + " echoCancellation:" + echoCancellationActuallyEnabled
                             + " audioCapture:" + (audioCaptureIsFloat ? "float" : "pcm16")
-                            + " micGain:" + (adaptiveGainProcessor != null ? "adaptive(target:" + PixelGramSettings.getAdaptiveGainTargetDb() + "dB)" : PixelGramSettings.getMicGainMultiplier() + "x")
+                            + " micGain:" + (adaptiveGainProcessor != null ? "adaptive(target:" + PixelGramSettings.getAdaptiveGainTargetDb() + "dB,silenceFloor:" + PixelGramSettings.isAdaptiveGainSilenceFloorEnabled() + ")" : PixelGramSettings.getMicGainMultiplier() + "x")
                             + " micDirection:" + (currentMicDirection != null ? currentMicDirection : "off") + "(applied:" + micDirectionApplied + ")"
                             + " micFieldDimension:" + requestedMicFieldDimension + "(applied:" + micFieldDimensionApplied + ")"
                             + " voiceIsolation:" + PixelGramSettings.getVoiceIsolationMode() + " gateThreshold:" + PixelGramSettings.getVoiceIsolationGateThresholdDb()

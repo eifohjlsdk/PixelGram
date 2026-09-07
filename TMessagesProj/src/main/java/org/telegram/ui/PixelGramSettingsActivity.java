@@ -98,6 +98,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
     private int agcRow;
     private int echoCancellationRow;
     private int adaptiveGainRow;
+    private int adaptiveGainSilenceFloorRow;
     private int adaptiveGainTargetRow;
     private int adaptiveGainAttackRow;
     private int adaptiveGainReleaseRow;
@@ -191,6 +192,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
         agcRow = rowCount++;
         echoCancellationRow = rowCount++;
         adaptiveGainRow = rowCount++;
+        adaptiveGainSilenceFloorRow = rowCount++;
         adaptiveGainTargetRow = rowCount++;
         adaptiveGainAttackRow = rowCount++;
         adaptiveGainReleaseRow = rowCount++;
@@ -322,6 +324,12 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 listAdapter.notifyItemChanged(adaptiveGainReleaseRow);
                 listAdapter.notifyItemChanged(micGainRow);
                 listAdapter.notifyItemChanged(micGainVoiceMessageRow);
+                listAdapter.notifyItemChanged(adaptiveGainSilenceFloorRow);
+            } else if (position == adaptiveGainSilenceFloorRow) {
+                if (PixelGramSettings.isAdaptiveGainEnabled()) {
+                    PixelGramSettings.setAdaptiveGainSilenceFloorEnabled(!PixelGramSettings.isAdaptiveGainSilenceFloorEnabled());
+                    ((TextCheckCell) view).setChecked(PixelGramSettings.isAdaptiveGainSilenceFloorEnabled());
+                }
             } else if (position == adaptiveGainTargetRow) {
                 if (PixelGramSettings.isAdaptiveGainEnabled()) {
                     showAdaptiveGainTargetDialog();
@@ -1010,6 +1018,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || (pos == agcRow && AutomaticGainControl.isAvailable())
                     || (pos == echoCancellationRow && AcousticEchoCanceler.isAvailable())
                     || pos == adaptiveGainRow
+                    || (pos == adaptiveGainSilenceFloorRow && PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == adaptiveGainTargetRow && PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == adaptiveGainAttackRow && PixelGramSettings.isAdaptiveGainEnabled())
                     || (pos == adaptiveGainReleaseRow && PixelGramSettings.isAdaptiveGainEnabled())
@@ -1182,6 +1191,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setAlpha(available ? 1f : DISABLED_ROW_ALPHA);
                     } else if (position == adaptiveGainRow) {
                         cell.setTextAndCheck("Adaptive Gain", PixelGramSettings.isAdaptiveGainEnabled(), true);
+                    } else if (position == adaptiveGainSilenceFloorRow) {
+                        boolean enabled = PixelGramSettings.isAdaptiveGainEnabled();
+                        cell.setTextAndCheck("Silence Floor" + (enabled ? "" : " (enable Adaptive Gain)"), PixelGramSettings.isAdaptiveGainSilenceFloorEnabled(), true);
+                        cell.setAlpha(enabled ? 1f : DISABLED_ROW_ALPHA);
                     }
                     break;
                 }
@@ -1221,7 +1234,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
             } else if (position == headerCredentialsRow || position == headerRecordingRow || position == headerQualityRow || position == headerAudioRow || position == headerUpdatesRow) {
                 return TYPE_HEADER;
             } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == lowLightBoostRow || position == previewStabilizationRow
-                    || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow || position == adaptiveGainRow) {
+                    || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow || position == adaptiveGainRow
+                    || position == adaptiveGainSilenceFloorRow) {
                 return TYPE_CHECK;
             } else if (position == updateInfoRow || position == lowLightBoostInfoRow || position == cameraApiStatusRow) {
                 return TYPE_INFO;
