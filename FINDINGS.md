@@ -2994,3 +2994,127 @@ sharpness-comparison chain (rows 2, 3, 4, 5, 8) is the one most worth re-running
 the only cluster where the flagged mechanism (Camera2-only edge/NR/tonemap modes not applying,
 plus a different resolution-selection path) could plausibly account for some or all of a
 measured deficit that was then chased through several rounds of shader fixes.
+
+## Sharpness/exposure/audio re-comparison vs iPhone with Camera2 re-enabled, verified from the file (2026-09-07)
+
+Re-ran the iPhone comparison after re-enabling Camera2 on both installs, since the earlier
+sharpness-chasing sequence was flagged as possibly measured under the Camera1 fallback. Clips:
+`1788786293502.mp4` (PixelGram, release build) and `video.mp4` (iPhone), ~32s each, walking
+bright room -> dim room -> bright room while talking, both phones at half arm's length, face
+centered. Settings: 640px/3Mbps, Preview Stabilization on, dither off, NR/edge off, tonemap
+fast, face metering off, EV 0; audio CAMCORDER source, Adaptive Gain -15dBFS/0.4s/1.2s.
+
+**Confirmed Camera2 produced this clip, from the file itself.** Debug logging was off (no
+marker line), so this relies on indirect evidence rather than the `cameraApi:` field: extracted
+every frame's presentation timestamp (`SurfaceTexture.getTimestamp()`, forwarded through
+`handleVideoFrameAvailable`'s `dt` accumulator to `eglPresentationTimeANDROID` - confirmed by
+reading `InstantCameraView.java`, so PTS genuinely reflects camera-frame arrival time, not a
+synthetic fixed-rate clock) and computed inter-frame deltas across the whole clip. Result: 30fps
+rock-steady throughout, min/max delta 30.6-34.3ms (stdev 0.23ms), including the darkest window
+(t=16-20s, mean luma ~72-74 on a 0-255 scale, comfortably dim) where an unconstrained Camera1 AE
+would be expected to extend exposure past the frame budget and show large delta spikes or a
+frame-rate drop. None appeared. This is consistent with `CONTROL_AE_TARGET_FPS_RANGE` being
+pinned - a Camera2Session-exclusive mechanism, never touched on the Camera1 path. Not proof to
+the same standard as a marker-line read would be, so noted as inferred with high confidence, not
+certain; the `cameraApi:` field added earlier this session gives a direct answer for any future
+recording with debug logging on. (Sharpness was *not* used as corroborating evidence here, on
+reflection - both `Camera2Session.chooseSupersampleCaptureSize` (cap 1920px) and Camera1's
+`chooseOptimalSize` (cap 1440/1200px) request a native capture well above the 640px target and
+let the GL shader downscale it, so supersampling happens on both paths and sharpness alone
+doesn't discriminate between them.)
+
+**Methodology note**: both round-video files bake the circular mask and "TELEGRAM"
+watermark/logo into the actual pixel content (confirmed by decoding frames directly - black
+corners and the logo are real pixels, not a player-side overlay). All frame-level stats below
+are from the largest square inscribed in the circle (side = diameter/sqrt(2), centered) to
+exclude the mask; using the raw frame would have skewed shadow/noise stats toward the mask's
+black corners. Ten frames per clip at 3s intervals (t=0,3,...,27); PixelGram's frames scaled
+452px -> 282px (matching iPhone's native inscribed-square size) for the sharpness comparison
+only, so neither camera is compared against a resolution it wasn't actually delivering.
+
+**Exposure**: PixelGram runs measurably brighter than the iPhone once the room dims, not just
+generally brighter. Bright-scene frames (t=0,3,6,9,24,27): PixelGram averages Y=147.9 vs
+iPhone's 140.4 (+7.5). Dim-scene frames (t=12,15,18,21): PixelGram averages Y=98.2 vs iPhone's
+70.6 (+27.6) - a gap almost 4x wider than in the bright frames, i.e. PixelGram is holding
+exposure up specifically in low light rather than just running an overall brighter curve. EV was
+0 and face metering was off for this test, ruling those out as the cause; this is baseline AE
+behavior. Neither camera clipped highlights (`Y>=250`) or crushed shadows (`Y<=5`) at any of the
+20 sampled frames - 0.00% both directions throughout - so this scene never got bright or dark
+enough in-frame to distinguish highlight/shadow handling either way.
+
+**Adaptation speed**: ambiguous, flagged rather than called. Computed the 50%-of-transition
+luma-crossing time for each direction: PixelGram crosses ~1.7s *before* the iPhone on the way
+into the dim room (9.8s vs 11.5s) but ~1.2s *after* it on the way back to bright (23.1s vs
+21.9s) - the "faster" camera flips depending on direction, which is the signature of take-to-take
+walking-pace variance dominating the signal, not a real AE-speed difference. These are two
+separate recordings of two separate walks, not a synchronized side-by-side rig, so this
+comparison can't actually distinguish "camera responded faster" from "the person happened to
+walk into/out of the room a bit sooner on that particular take." Both cameras plateau at their
+new brightness level within roughly 4-5s of the transition starting, in both directions - that
+part is genuinely comparable and shows no gross lag on either side.
+
+**Sharpness** (blurdetect, lower=sharper, PixelGram scaled to match iPhone's content size):
+iPhone averages 7.76 across the 10 frames, PixelGram 8.78 - iPhone measurably sharper, ~13%
+relatively. PixelGram's worst frame (11.22 at t=21) lands in the dim-to-bright transition and is
+most plausibly added motion blur (walking + still-low light) rather than a static-quality
+deficit; excluding it narrows PixelGram's average to 8.51, still behind iPhone's 7.76.
+
+**Noise**: measured via a proxy (stddev of a flat wall/ceiling patch after subtracting a
+heavily-blurred copy of itself, isolating high-frequency content) since no numpy/PIL was
+available in this environment for a proper no-reference noise estimator - flagged as
+lower-confidence for that reason, and two sample points were dropped after visual inspection of
+the actual patch crop showed scene content (a ceiling light fixture at PixelGram t=24, hair at
+iPhone t=21) had intruded into the "flat" patch, contaminating the reading with real edges
+rather than noise. With those excluded: PixelGram's dim-frame noise proxy (3.03) is ~23% higher
+than its own bright-frame proxy (2.47) - the expected direction for a fixed-30fps capture, which
+must raise gain/ISO rather than extend exposure in low light. iPhone's proxy doesn't show a
+clean bright-vs-dim pattern (2.87 bright vs 2.13 dim, backwards from expectation, on only 3 valid
+dim samples) - most likely proxy noise/instability rather than a real finding, given the small
+sample and the metric's sensitivity to exactly what texture the patch happens to catch. Treat
+the *within-camera* dim-vs-bright direction for PixelGram as reasonably solid; treat any
+*cross-camera* absolute noise comparison from this proxy as not reliable enough to call. A
+side-by-side crop at t=18 (the darkest sampled frame) does show visibly more grain on
+PixelGram's flat wall than iPhone's by eye, for whatever a single qualitative look is worth
+alongside the shaky quantitative measurement.
+
+**Audio.** Extracted with `ffmpeg -vn`, analysed with `astats`/band-limited RMS (no reference
+decoder needed for these):
+- **Levels**: PixelGram RMS -22.09dB overall vs iPhone's -36.83dB - ~14.7dB louder on average,
+  as expected from Adaptive Gain being active only on our side. The loudest 0.5s window peaks at
+  -15.85dB, essentially right at the configured -15dBFS RMS target - the leveler is hitting its
+  target as configured. Peak level -2.93dB with no digital clipping despite the gain, consistent
+  with the limiter doing its job. iPhone's peak sits at -9.79dB, much more headroom, no leveling
+  applied on that side (expected - nothing analogous configured there).
+- **Noise floor**: iPhone measures a real, low, nonzero floor around -45.5dB (typical mic
+  self-noise/room tone). PixelGram's floor reads as literal digital silence (`-inf`) for a much
+  larger fraction of the clip (12934 qualifying samples vs iPhone's 597) - some stage in our
+  pipeline is gating quiet segments to true zero rather than leaving room tone in place. Reported
+  as an observed fact, not attributed to a specific stage (Adaptive Gain's release behavior
+  during pauses and any voice isolation gate are both plausible candidates, not distinguished by
+  this measurement) - could read as "cleaner" or as "unnaturally gated" depending on how it
+  sounds on playback, not established either way here.
+- **Spectral balance**: corroborates, doesn't newly discover, the CAMCORDER-source bass
+  character already documented above (2026-09-05 entries). PixelGram's low band (20-150Hz) sits
+  only 5.7dB below its own mid band; iPhone's low band sits *below* its mid band by a wider
+  margin (roughly flat to slightly recessed) - PixelGram's bass is proportionally more prominent
+  than iPhone's relative to each camera's own spectrum, not just louder from the overall gain
+  difference (the low-band gap is 17.4dB against a 14.7dB overall gain gap - a real ~2.7dB bass
+  excess beyond the general loudness increase). Treble (3-8kHz) relative to mid: PixelGram rolls
+  off 6.1dB, iPhone rolls off 4.8dB - a small additional relative treble deficit, consistent with
+  ("didn't close the treble gap") rather than contradicting it.
+- **Handling noise while walking**: no clear evidence of a walking-specific artifact distinct
+  from the bass character above. Windowed (0.25s) low-band RMS over time tracks each clip's
+  overall speech envelope rather than showing isolated periodic thumps uncorrelated with speech
+  (which is what a footstep/handling transient would look like) - the elevated PixelGram bass
+  reads as a broadband mic-response characteristic present throughout, not a walking-triggered
+  spike. This test can't rule out a subtler handling artifact than 0.25s-resolution band energy
+  would catch, so treat this as "nothing obvious found," not "confirmed absent."
+
+**Where each is better, net:** iPhone: sharper (~13%), true room-tone noise floor rather than
+gated silence, slightly better relative treble balance. PixelGram: exposure holds up much more
+in dim scenes (though this trades against the noise increase that comes with staying on a fixed
+frame rate), Adaptive Gain delivers audio at a controlled, predictable, headroom-safe level
+where iPhone's is quiet and uncontrolled by comparison. Adaptation speed and cross-camera noise
+floor comparison are both flagged above as not reliably distinguishable from take-to-take scene
+variance with this test's setup - a repeat with a synchronized side-by-side rig (both phones
+recording the same walk simultaneously) would be needed to settle either one.
