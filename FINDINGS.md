@@ -3118,3 +3118,163 @@ where iPhone's is quiet and uncontrolled by comparison. Adaptation speed and cro
 floor comparison are both flagged above as not reliably distinguishable from take-to-take scene
 variance with this test's setup - a repeat with a synchronized side-by-side rig (both phones
 recording the same walk simultaneously) would be needed to settle either one.
+
+## Correction: the iPhone/PixelGram comparison clips were simultaneous, not separate takes; AE asymmetry is real (2026-09-07)
+
+The clips analysed in the entry above were recorded **simultaneously** (both phones held
+together on one walk), not as two separate takes as assumed when writing that entry - both
+cameras saw identical lighting at identical times. That assumption only affected the
+"Adaptation speed" paragraph (checked the rest of that entry - exposure, sharpness, noise,
+clipping, and every audio finding were already reported as real differences on their own
+merits, not discounted as take-to-take variance, so nothing else needs revising).
+
+**Re-measured with the corrected assumption**, using the full-transition duration (90%-of-drop
+to 10%-of-drop for darkening, 10%-of-rise to 90%-of-rise for brightening) rather than a single
+50%-crossing point, since duration is insensitive to any small constant offset between the two
+phones' exact physical mic/lens position in the frame of travel:
+- **Darkening** (bright room -> dim): PixelGram completes the transition in 4.36s (t=7.98s ->
+  12.34s), iPhone in 5.57s (t=9.04s -> 14.60s) - PixelGram **1.21s faster** (22% shorter).
+- **Brightening** (dim -> bright room): PixelGram takes 3.30s (t=20.08s -> 23.38s), iPhone 2.59s
+  (t=20.31s -> 22.91s) - PixelGram **0.71s slower** (27% longer).
+- The 50%-crossing figures reported directly to the user (PixelGram 1.7s earlier darkening, 1.2s
+  later brightening) are consistent with these duration figures, not an artifact of picking one
+  particular percentile.
+- PixelGram's darkening transition also *starts* about 1.1s before iPhone's (t=7.98 vs 9.04) -
+  noted, but not leaned on as primary evidence, since "held together" doesn't guarantee the two
+  sensors crossed the exact same doorway threshold at the same instant to sub-second precision.
+  The duration comparison above doesn't depend on this and shows the same asymmetry regardless.
+
+**Conclusion: real, direction-asymmetric AE behavior - faster to darken, slower to brighten.**
+Practically, this means walking from a dim room into bright light leaves PixelGram overexposed
+for longer than the iPhone - close kin to the original backlit-scene complaint that started this
+whole investigation.
+
+**What could cause it, and what we control vs. don't:**
+- Read every `CONTROL_AE_*` key `Camera2Session` sets: `CONTROL_AE_TARGET_FPS_RANGE` (pinned
+  fixed, this session's settings had face metering off so `CONTROL_AE_REGIONS` was the
+  weight-0/full-frame case, not face-anchored), `CONTROL_AE_EXPOSURE_COMPENSATION` (0, gated off
+  entirely without a face), `CONTROL_AE_MODE` (untouched unless Low Light Boost is on - it
+  wasn't: the frame-timing check above never showed the 14-17fps collapse that mode causes, and
+  it isn't in this test's settings list). `CONTROL_AE_LOCK` is never set anywhere in this class -
+  left at its unlocked default.
+- **There is no public Camera2 key for AE convergence speed or attack/release asymmetry**, in
+  either direction. Nothing in `updateCaptureRequest()` requests, biases, or could bias
+  convergence direction - the capture request is symmetric with respect to brightening vs.
+  darkening. This makes it very unlikely that anything we explicitly set is *directly*
+  responsible for the asymmetry.
+- Most likely explanation: **the ISP/HAL's own 3A convergence policy**, which commonly *is*
+  deliberately asymmetric on real camera stacks - fast to reduce exposure (protects against
+  blown highlights, which are unrecoverable) and more gradual to increase it (avoids visible
+  "pumping"/flicker from transient bright content passing through frame). This is proprietary
+  AE-algorithm tuning inside the HAL, invisible to and not queryable from the public Camera2
+  API - can't be confirmed further from outside the HAL.
+- **One plausible indirect contributor from our own settings**: the fixed-FPS pin removes
+  exposure *time* as a lever in both directions, forcing the entire response through gain/ISO
+  instead of the exposure-time+gain blend an unconstrained AE (plausibly closer to what the
+  iPhone does) can use. Gain-only and exposure-time-based responses aren't guaranteed to have
+  identical transient dynamics, so the fixed-fps pin could be *amplifying* an asymmetry that a
+  variable-fps HAL default would show to a lesser degree - **hypothesis, not confirmed**; testing
+  would mean recording with the fps pin temporarily removed and re-measuring the same
+  darkening/brightening durations, which hasn't been done.
+- Low Light Boost, face-AE metering, and exposure compensation are all independently ruled out
+  for *this specific test* (off/inactive per the settings list and the frame-timing check above),
+  so none of those explain this particular measurement - though any of the first two could still
+  matter for the general "backlit scene" complaint under settings where they're active.
+
+## Audio noise-floor and bass investigation: traced, nothing changed yet (2026-09-07)
+
+Investigated per request, no code changed. Covers the "-inf noise floor" and "bass-heavy vs
+iPhone" findings from the entry above.
+
+**Noise floor: not our software gating it - traced to a lossy-encoder threshold effect.**
+Checked every candidate that could explicitly floor the signal to literal zero:
+- `VoiceIsolationProcessor.process()`/`processFloat()` both start with
+  `if (mode == VOICE_ISOLATION_OFF) return;` - a genuine no-op, not a partial pass-through, when
+  off. Confirmed the mode really is off for this device: pulled `pixelgram_settings.xml` from the
+  debuggable beta install (the release install used for the recording isn't debuggable, so this
+  is the closest available evidence, not a direct read of the exact recording session's prefs -
+  noted as a gap) - `voice_isolation_mode` isn't even present in the file, meaning it's at its
+  default (`VOICE_ISOLATION_OFF`). Same file also confirms `speech_enhancement_mode=0`
+  (`SPEECH_ENHANCEMENT_OFF` - RNNoise, which defaults *on* as of 1.0.2, really is explicitly off
+  here), `noise_suppression_enabled=false` and `echo_cancellation_enabled=false` (both override
+  their own defaults of `true`). All four confirmed off, not just assumed.
+- `AdaptiveGainProcessor.processFloat()` read in full: `slowGainDb` is **frozen** (not driven
+  toward zero or anywhere else) during non-speech - it's only updated inside the `if (isSpeech)`
+  block, per its own doc ("frozen entirely during non-speech so gain doesn't creep up"). The
+  limiter component computes `neededLimiterDb = min(0, CEILING_DB - projectedPeakDb)`, which is 0
+  (no reduction) whenever the buffer is quiet, since a quiet buffer's peak is nowhere near the
+  ceiling - it releases toward unity gain during silence, not toward `-inf`. Confirmed no
+  `[-1,1]` clamp or any other floor anywhere in this class either (its own doc notes this
+  explicitly, deliberately deferring to downstream limiting). **This class only ever multiplies
+  by a gain; multiplying a genuinely-nonzero input never produces an exact zero output.**
+- Conclusion: nothing in our own processing chain writes literal zero. The literal-zero segments
+  must already be very quiet *before* any of our code runs, or must be introduced downstream of
+  it (i.e. by the AAC encoder).
+- **Tested the AAC-quantization hypothesis directly**: encoded synthetic white noise at three
+  RMS levels (-45dBFS, matching the iPhone's measured room tone; -60dBFS; -75dBFS) through
+  `ffmpeg`'s AAC encoder at the same 96kbps this app uses, then measured the decoded result.
+  -45dBFS survived encoding as a real, nonzero floor (-42.2dB after roundtrip) - matches what was
+  actually measured for the iPhone almost exactly. -60dBFS also survived as real, nonzero
+  (-59.2dB). -75dBFS collapsed to literal digital silence after encoding. **A lossy AAC encoder
+  at this bitrate really does round already-very-quiet content down to exact zero once it's quiet
+  enough - somewhere between -60 and -75dBFS input, for this test signal** (this used `ffmpeg`'s
+  own AAC encoder as a same-codec-family stand-in for Android's hardware/software AAC encoder,
+  since there's no way to intercept the actual on-device encoder's input from outside the app -
+  indicative, not a direct measurement of the exact encoder in use).
+- **Working conclusion**: PixelGram's genuine captured "silence" is quiet enough, pre-encode, to
+  fall below AAC's effective floor at this bitrate, while the iPhone's real room tone (~-45dBFS)
+  sits comfortably above it. This reframes the artifact - it isn't a gate or a bug flooring the
+  signal, it's a real (and if anything, flattering - a quieter true noise floor is generally
+  good) difference in captured quietness that a lossy codec then rounds off entirely. **This
+  also means the "unnatural silence" character the user associated with RNNoise at full strength
+  may not have been RNNoise-specific** - it reproduced here with RNNoise confirmed off, so
+  whatever produces it is present regardless of that setting.
+- **One plausible indirect amplifier from our own settings, not confirmed**: Adaptive Gain
+  boosts speech toward -15dBFS but leaves the (already-quiet) silence untouched, widening the
+  gap between "loud" and "quiet" sections of the clip well beyond what leaving gain at 1x would
+  produce. Perceptual codecs allocate bits partly by temporal/level masking, and are known to
+  be more willing to zero out a quiet passage that follows a much louder one - so a wider
+  dynamic range from leveling could make the AAC encoder *more* likely to floor the quiet
+  sections, even though Adaptive Gain itself never touches them directly. Not tested against a
+  fixed-gain or gain-off recording, so this stays a hypothesis.
+- **Not established**: whether Android's actual hardware/software AAC encoder behaves
+  identically to `ffmpeg`'s, and what PixelGram's true pre-encode silence level actually is (no
+  access to the raw pre-encode float buffer from an on-device recording in this investigation) -
+  both would need a small temporary instrumentation change to close out, which wasn't made per
+  the "report before changing anything" instruction this was done under.
+
+**Bass: CAMCORDER's own documented character, not compounded by anything currently active.**
+For this test's exact settings (only Adaptive Gain on): `AdaptiveGainProcessor` applies a single
+broadband scalar gain (`totalGain`) with no frequency dependence, so it cannot be shaping the
+spectrum - ruled out. `VoiceIsolationProcessor` and RNNoise are both confirmed off (same
+settings check as above), so neither is active in this recording. **For this configuration,
+nothing in the chain compounds the bass beyond `AudioSource.CAMCORDER`'s own documented
+character** - the measured ~2.7dB excess (low-band gap 17.4dB vs. the 14.7dB overall gain gap)
+is consistent with the source alone. Whether RNNoise shapes the spectrum unevenly when it *is*
+active (its Bark-scale gain bands aren't guaranteed spectrally flat) is a real open question for
+recordings where it's on, not tested here since it's off in this one - the user's own note that
+the character "is consistent across every comparison we've done, not just this one" is
+consistent with it being a `CAMCORDER`-source property independent of RNNoise, but that's an
+observation, not a controlled test of RNNoise on vs. off with everything else held fixed.
+
+**On a high-pass or treble tilt closing the gap**: `VoiceIsolationProcessor` already contains a
+well-designed, gentle 90Hz high-pass (Butterworth Q=0.707 biquad, maximally flat, RBJ Cookbook
+form) - and critically, **`PixelGramSettings.VOICE_ISOLATION_BANDPASS` (mode 1) already applies
+this filter with the downward-expander gate disabled** (`gateEnabled = mode ==
+VOICE_ISOLATION_BANDPASS_GATE`, false for mode 1). The artifact the user disliked when testing
+"the bandpass... at full strength" is far more likely attributable to the *gate* stage (a
+downward expander, which can produce exactly the kind of hard, unnatural-sounding silence under
+investigation above) than to the filtering itself - mode 1 exists specifically as the
+filter-without-gate option and has gone untried as such, per this conversation. **However, this
+filter is a 90Hz-7kHz *bandpass*, not a plain high-pass**: turning it on would also impose a
+7kHz low-pass, which would cut further into the treble range already measured as relatively
+weak (rolling off 6.1dB vs. the iPhone's 4.8dB relative to each camera's own mid-band) - using
+it as-is would likely trade one problem for a worse version of the other. A treble shelf/tilt
+does not exist anywhere in this codebase currently (checked - `VoiceIsolationProcessor.java` is
+the only DSP file with any filtering at all, and it has no shelf, only the HP+LP pair). Two
+options, neither implemented: (a) a standalone high-pass-only stage reusing
+`VoiceIsolationProcessor`'s existing, already-tested `computeHighPass`/biquad math with the
+low-pass cascade and gate both dropped - the lower-risk option, most of the DSP already exists
+and is proven; (b) a high-shelf boost above roughly 4-6kHz to directly address the treble
+deficit - genuinely new code, unimplemented, higher effort. Neither built this turn per
+instruction.
