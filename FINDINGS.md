@@ -3484,3 +3484,92 @@ in the class changed - the normal per-buffer attack/release convergence proceeds
 after the seed, so a loud passage later in the clip (a car passing at 5s, say) is handled by the
 exact same, unmodified code path as before. Added `initial:` to the `micGain:` marker field.
 Compiled clean.
+
+## Upstream 12.10.1 rebase: investigated, attempted, aborted as messier than it looked (2026-09-11)
+
+Fetched `origin/master` at `62b56a07c` (5 commits ahead of our fork point `3f03bfc73`): a
+version-bump commit, a third-party-libs vendored-to-submodule restructuring, and the
+`:jlatexmath` settings.gradle fix already known from FINDINGS.md's own build-fix entry.
+
+**What the submodule restructuring means for the build**: `TMessagesProj/jni/CMakeLists.txt`
+moves `libyuv` from ~70 explicitly-listed vendored source files in `target_sources(...)` to a
+`add_subdirectory(third_party/libyuv ...)` + `target_link_libraries(... yuv ...)` submodule
+build; `openh264` and `tlottie` move to prebuilt static libs (`libopenh264.a`, `libtlottie.a`,
+checked in as binaries under a new `TMessagesProj/jni/prebuild/` directory, built via new
+Docker-based scripts) instead of building openh264 from vendored source at all. `.gitmodules`
+gains `libyuv`/`openh264` and bumps the existing `tlottie`/`jlatexmath` submodule pointers.
+`TMessagesProj/build.gradle` bumps `compileSdkVersion`/`targetSdkVersion` 35->36,
+`buildToolsVersion` 35.0.0->36.0.0, the cmake plugin version 3.10.2->3.22.1, and adds an
+explicit `targets 'tmessages.49'` line; `TMessagesProj/jni/CMakeLists.txt`'s own
+`cmake_minimum_required` also bumps to 3.16.
+
+**Checked this environment against those requirements before touching git**: CMake 3.22.1 and
+NDK 27.2.12479018 are already installed (matching exactly). Android SDK Platform 36 and
+Build-Tools 36.0.0 are **not** installed (only 35/35.0.0) - `sdkmanager` confirms it can reach
+the remote repository, so these are installable, just not a zero-cost step.
+
+**None of the four main files we've changed most (Camera2Session.java, PixelGramSettings.java,
+InstantCameraView.java, PixelGramSettingsActivity.java) are touched by any of these 5 upstream
+commits** - confirmed by diffing each upstream commit individually. Our own edits to
+`TMessagesProj/jni/CMakeLists.txt` (one line, adding `speech_enhancer.c` to the source list) and
+`TMessagesProj/build.gradle` (a `buildTypes` block, `DEBUG_API_ID`/`DEBUG_API_HASH` fields) sit
+in regions upstream's diff never touches either - both would apply cleanly.
+
+**Attempted the actual rebase** (on a throwaway backup branch, not blind) rather than reasoning
+about it only in the abstract: `git rebase origin/master` failed on the very first of our 88
+commits (`72f51b9f5`, the original squash commit), with two conflicts:
+- `settings.gradle`: exactly the "identical fix" case predicted - we independently found and
+  fixed the same missing-`:jlatexmath` bug upstream did, with the literal same two lines. Trivial
+  to resolve (keep either side, drop the duplicate), but a real conflict, not an auto-merge.
+- `README.md`: a genuine content conflict, not a coincidence - upstream bumped one line ("Android
+  SDK 35" -> "36") inside their still-present stock build-instructions section; our very first
+  commit restructured README.md into project documentation and replaced that exact paragraph
+  with unrelated content (the AE-target-fps-range writeup), so git can't reconcile "bump this
+  line" against "this line doesn't exist in your version anymore, something else does."
+
+Two more of our 88 commits (`71b0b8b21`, `18ea81c24`, `6b260fcbe`) also touch `README.md` later
+- each is a fresh opportunity for the same kind of conflict once the first is resolved, not yet
+individually checked, since the rebase was aborted before reaching them.
+
+**Decision: skipped, per instruction** - straightforward would have meant one predictable,
+mechanical conflict; what was actually found was a real content conflict on commit one of 88,
+an SDK/build-tools version this environment doesn't have yet, and two further commits touching
+the same conflicted file with their own risk unassessed. Aborted cleanly (`git rebase --abort`,
+verified `git status` clean and `HEAD` back at the pre-rebase commit) and cut v1.1.2 on the
+current base instead, as instructed for exactly this outcome.
+
+## Focused A/B clips against background music: quiet-start fix confirmed, silence floor untestable here, treble tilt inferred (2026-09-11)
+
+Four self-recorded clips (background music at moderate level, voice deliberately quiet against
+it, phone on a stand, same song segment each take - conditions chosen to give a consistent
+reference signal since voice alone might not isolate cleanly). No marker-line/logcat data was
+available to confirm exactly which setting was active on which clip, so the pairing below is
+inferred from the audio itself, not confirmed - flagged accordingly.
+
+**Quiet-opening fix (Adaptive Gain Initial Level, 3x default): confirmed working, cleanly.** The
+short clip (~3.9s, speech starting immediately) shows true digital silence through t=0.2s (the
+pre-roll before speech starts), then -34dB at t=0.3s, then -8.5dB by t=0.5s - full target loudness
+reached within roughly 0.2-0.3s of speech starting, not the multi-second ramp the old
+unity-start behavior would have produced. This is the clearest, least ambiguous result of the
+three - a qualitative, easily-observed difference, not a marginal measurement.
+
+**Silence Floor: not meaningfully testable with this recording setup**, confirming the concern
+raised when the test was proposed. Checked all three long clips (~16.6-17.1s) at 0.5s
+resolution: none ever drops below roughly -46dB anywhere - continuous moderate-level background
+music means there's never a genuinely quiet segment for the floor to act on, regardless of
+which clip has it enabled. (All three also show a whole-clip `Noise floor dB: -inf` reading from
+`astats`, but per the finer windowed trace this isn't sustained non-speech content collapsing -
+it's too brief/localized to represent the sustained-silence case the setting targets.) A real
+test of this setting needs an actual quiet room, not background music.
+
+**Treble Tilt: a real, measurable difference, inferred pairing.** Band-RMS relative to each
+clip's own mid-band: two of the three long clips are close to acoustically identical to each
+other (high-band gap -3.58dB and -3.54dB; very-high-band gap -9.00dB and -8.96dB - agreeing to
+within 0.04dB on both bands), while the third differs clearly (high-band gap only -1.98dB,
+very-high-band gap -6.68dB - roughly 2-2.3dB more relative high-frequency energy than the other
+two). Most likely explanation: the two closely-matching clips are the same setting (Treble Tilt
+off, or one of them is the untestable Silence Floor clip - which wouldn't reshape the spectrum
+either way, consistent with matching the off baseline), and the outlier is Treble Tilt on. This
+is inferred from the acoustic evidence alone, not confirmed against a marker line - worth
+re-confirming directly (debug logging on, check the `trebleTilt:` marker field) next time rather
+than relying on inference.
