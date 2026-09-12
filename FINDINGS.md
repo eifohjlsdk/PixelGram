@@ -1,5 +1,16 @@
 # Findings: Pixel 11 Pro / Tensor G6 / Android 17
 
+## Archived (2026-09-11)
+
+Every measurement below was taken on one specific Pixel 11 Pro, which is no
+longer available to this project - nothing further can be verified on
+hardware. Treat every number in this document (fps ranges, zoom/AE
+behavior, exposure timing, audio levels and thresholds, sharpness/noise
+comparisons, everything) as specific to that one device at that point in
+time, not as a portable fact about Pixel 11 Pro units, the Tensor G6, or any
+other hardware in general. Anyone picking this project up should re-measure
+on their own device before trusting or building on any of it.
+
 Measured 2026-08-22.
 
 ## Environment

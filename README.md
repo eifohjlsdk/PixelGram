@@ -8,6 +8,17 @@ It is **not affiliated with, endorsed by, or supported by Telegram**. It's an
 independent, unofficial modification of the open-source Telegram Android
 client.
 
+## Archived (2026-09-11)
+
+This project was developed and every measurement in `FINDINGS.md` was taken
+on a single Pixel 11 Pro, which I no longer have - nothing further can be
+verified on hardware, so there will be no more updates. If you pick this up:
+**re-measure rather than trust the device-specific numbers** (fps ranges,
+zoom behavior, exposure/AE timing, audio levels, and anything else tied to
+that phone's specific sensor/HAL/mic) - they may not hold on a different
+Pixel 11 Pro unit, a different device entirely, or a future Android/Telegram
+version.
+
 ## Who made this and why
 
 No CS degree here, this is vibecoded with AI assistance. Circle videos on my
