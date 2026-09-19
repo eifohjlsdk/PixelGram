@@ -3584,3 +3584,114 @@ either way, consistent with matching the off baseline), and the outlier is Trebl
 is inferred from the acoustic evidence alone, not confirmed against a marker line - worth
 re-confirming directly (debug logging on, check the `trebleTilt:` marker field) next time rather
 than relying on inference.
+
+## Self-service capability dump for remote testers, ahead of Samsung Galaxy S26 support (2026-09-19)
+
+Extending to a device this project has no physical or adb access to (a friend's Galaxy S26,
+non-Ultra) needs a way to learn its capability surface without adb, a debuggable build, or any
+technical back-and-forth. Added a "Run Capability Dump" row to PixelGram Settings (new
+Diagnostics section) that works on the plain release build with debug logging off.
+
+**PixelCapsDump extended**: now enumerates `CameraManager.getCameraIdList()` instead of
+assuming ids `"0"`/`"1"` exist and mean rear/front - that's a Pixel convention
+`Camera2Session.create()` itself never relies on (it queries `LENS_FACING`), and a device with
+more cameras or a different id scheme would otherwise go partly undumped or mislabeled. Each
+camera's dump now leads with its actual `LENS_FACING` value for the same reason. Added explicit
+(not just relying on the all-keys dump) lines for `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`,
+`SENSOR_INFO_ACTIVE_ARRAY_SIZE`/`SENSOR_INFO_PIXEL_ARRAY_SIZE`,
+`NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES`, `EDGE_AVAILABLE_EDGE_MODES`,
+`CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES`, `CONTROL_MAX_REGIONS_AE`,
+`STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES`, `LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION`,
+`SCALER_AVAILABLE_MAX_DIGITAL_ZOOM`/`CONTROL_ZOOM_RATIO_RANGE` (API-guarded, matching
+`Camera2Session.open()`'s own guard on the same key) - everything on the checklist this was
+built to answer. Added a new section reporting `NoiseSuppressor`/`AutomaticGainControl`/
+`AcousticEchoCanceler`.isAvailable() (static capability only - the real code path also checks
+`getEnabled()` against a live session, which needs an actual recording; not repeated here since
+this class deliberately never starts one).
+
+**Delivery**: `PixelCapsDump.run()` now writes to the app's own external-files-dir (no
+permission needed on any targeted Android version) in addition to the legacy public-Downloads
+location (kept for debug-build `adb pull`, best-effort, not guaranteed under scoped storage) and
+returns that File. The settings row runs it on a background thread (`Utilities.globalQueue` -
+enumerating both cameras' full characteristics and constructing/releasing ~20 AudioRecords isn't
+free), then hands the file straight to `FileProvider`/`Intent.ACTION_SEND` so the tester's only
+step is picking a chat in the system share sheet - no file-manager hunting. `provider_paths.xml`
+already covered the external-files-dir via its existing "media" `<external-path>` entry, so no
+manifest change was needed.
+
+Compiled clean. Not live-tested end-to-end (share sheet -> actual send) - no device was
+connected this session to confirm the FileProvider URI resolves and the chooser launches; the
+mechanism itself (FileProvider + ACTION_SEND) is standard, version-independent Android, not
+something Pixel-specific, so this is expected to work but should be confirmed on a real device
+before relying on it with the actual remote tester.
+
+## Audit: Pixel-specific assumptions vs. queried-and-degrades, ahead of a second device (2026-09-19)
+
+Requested audit, not yet acted on beyond the PixelCapsDump camera-id fix above (which was really
+part of the diagnostic tool itself, not this audit). Reviewed Camera2Session.java,
+InstantCameraView.java, PixelGramSettings.java, AdaptiveGainProcessor.java,
+TrebleTiltProcessor.java, VoiceIsolationProcessor.java, and the capture-request-key call sites
+specifically for anything that assumes rather than queries.
+
+**The dominant pattern here is already the right one, and holds up**: nearly every capability
+this fork added (zoom ratio range, AE regions, antibanding, edge/NR/tonemap modes, preview
+stabilization, low light boost, face detect, mic direction/field dimension) is gated by reading
+the actual `CameraCharacteristics`/`AudioRecord` capability first, wrapped in its own try/catch,
+logged via `PixelCameraLog.w` on failure, and left at the platform default rather than crashing
+or corrupting state when unsupported. That's genuinely device-agnostic by construction, not
+something that needs auditing away.
+
+**Real findings, in three groups:**
+
+1. **A structural gap in the "isolated failure" pattern**, `Camera2Session.updateCaptureRequest()`:
+   most capture-request keys are individually try/caught, but `CONTROL_AE_TARGET_FPS_RANGE`,
+   `CONTROL_CAPTURE_INTENT`, `FLASH_MODE`, and the barcode/night `CONTROL_SCENE_MODE` sets
+   (lines ~886-888, ~877-882) are not - they're only covered by the one catch spanning the whole
+   method. On this dev's Pixel, that's never mattered (all four are baseline-supported values on
+   any real camera). On unfamiliar hardware, if any *one* of these four throws, every capture-
+   request key set *after* it in the same call - `EDGE_MODE`, `NOISE_REDUCTION_MODE`,
+   `TONEMAP_MODE`, `CONTROL_AE_REGIONS`, `CONTROL_ZOOM_RATIO`, `SCALER_CROP_REGION` - silently
+   never gets applied for that update cycle, not just the one that actually failed. Not a crash
+   (the outer catch still logs via `PixelCameraLog.w`), but a wider blast radius than the
+   individually-wrapped keys have, and the kind of thing worth individually isolating before
+   relying on it against a HAL we've never seen fail.
+
+2. **Tuned constants that are real values from one measurement on one device, not queried
+   capabilities** - already covered by the blanket README/FINDINGS re-measure notice in spirit,
+   but naming the specific ones since they're the concrete things a Galaxy S26 test would need to
+   revisit, not just "everything":
+   - `Camera2Session.SUPERSAMPLE_MAX_DIMENSION = 1920` - its own doc already calls this "a
+     conservative heuristic cap... not a queried... answer," with a documented graceful fallback
+     to the old direct-capture path if nothing near-square fits under it. Not a misbehavior risk
+     either way - at worst, a modern S26 sustains more than 1920px fine and this leaves
+     supersampling quality on the table unnecessarily.
+   - `TrebleTiltProcessor.SHELF_HZ = 4000f` and the LOW/MEDIUM/HIGH `+2/+4/+6dB` gains - tuned
+     against the CAMCORDER source's specific bass character *as measured on this Pixel's Tensor
+     G6 audio HAL*. Off by default, so this can't silently misapply, but if it's turned on for
+     testing, whether 4kHz/those gains are the right shelf for a different phone's mic and HAL
+     is unknown, not degraded-gracefully-unknown - it just wasn't measured there.
+   - `AdaptiveGainProcessor.SILENCE_FLOOR_TARGET_DB = -60f` - tuned against measuring *this
+     device's* AAC encoder's collapse-to-zero threshold (confirmed bitrate-independent, but never
+     tested against a different AAC encoder implementation - Samsung phones commonly use a
+     different vendor encoder than Tensor's). `DEFAULT_ADAPTIVE_GAIN_INITIAL_MULTIPLIER = 3f` -
+     explicitly "roughly where recordings settle" on this dev's own voice/mic/distance, named as
+     such in its own comment already.
+   - `PixelGramSettings.getVoiceEnhancementAudioSource()` defaulting to `CAMCORDER` - a request,
+     not a guarantee; this fork's own FINDINGS history shows `CAMCORDER` behaves differently
+     (bass character, AGC/NS insertion) across even just the two devices already compared
+     (Pixel vs. iPhone's own equivalent) - a third OEM's HAL routing for this AudioSource is a
+     real unknown, not a queryable one ahead of time (no CameraCharacteristics-style capability
+     key for "how does this AudioSource sound here").
+
+3. **Two structural checks that turned out fine, worth recording so they're not re-litigated**:
+   the `SCALER_CROP_REGION` centering math (`updateCaptureRequest()`, ~line 1070) computes
+   entirely from queried `sensorSize`/`previewSize` aspect ratios - the "3440x2448, not square"
+   in its comment is this device's measured value cited for the reasoning, not a hardcoded
+   input, so an S26's differently-shaped sensor is handled by the same generic math. The
+   resolution picker's 640px ceiling (`PixelGramSettingsActivity.showResolutionDialog()`) looked
+   like it could be an encoder/device limit from its narrow "641-671" bracketing language, but is
+   actually a Telegram *server-side* upload-rejection ceiling - universal across every client and
+   device, not something a new phone changes.
+
+No code changed as part of this audit beyond the PixelCapsDump fix noted above, per instruction
+to report first.

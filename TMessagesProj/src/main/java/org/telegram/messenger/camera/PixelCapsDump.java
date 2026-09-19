@@ -31,37 +31,61 @@ import java.util.List;
  * One-off diagnostic. Dumps the camera, codec and audio capability surface for this
  * device: every CameraCharacteristics key (plus a few named ones explicitly) and
  * CameraExtensionCharacteristics for camera ids "0" and "1"; MediaCodecList encoder
- * capabilities for video/avc, video/hevc and audio/mp4a-latm; and whether
+ * capabilities for video/avc, video/hevc and audio/mp4a-latm; whether
  * AudioRecord.setPreferredMicrophoneDirection/setPreferredMicrophoneFieldDimension
- * report success on a throwaway AudioRecord.
+ * report success on a throwaway AudioRecord; and static availability of the three
+ * platform AudioEffects this app conditionally uses.
  *
  * Purely a reader: it only calls getters/capability queries, opens no camera, and
  * starts no encoder or capture. It does not touch any state used by the app's real
- * camera/codec/audio paths. Triggered only when explicitly requested (see
- * LaunchActivity's "pixelcaps_dump" intent-extra hook) - never runs as a side effect
- * of normal app usage.
+ * camera/codec/audio paths. Triggered either from LaunchActivity's "pixelcaps_dump"
+ * intent-extra hook (debug builds only) or PixelGramSettingsActivity's "Run Capability
+ * Dump" row (all builds - see that row's own doc for why this needs to work without a
+ * debuggable build or debug logging) - never runs as a side effect of normal app usage.
  *
- * Logs every line under tag "PixelCaps" and additionally writes the same content to
- * <Downloads>/PixelCaps/pixelcaps_dump.txt (same public-Downloads approach the app
- * already uses for saved media - see MediaController's download paths - so it's
- * reachable with a plain `adb pull`).
+ * Logs every line under tag "PixelCaps" (always reaches logcat, same as PixelCameraLog -
+ * see that class's doc for why this matters on a release build) and writes the same
+ * content to two places: the app's external-files-dir (`getExternalFilesDir(null)/
+ * PixelCaps/pixelcaps_dump.txt`) - always writable without any permission, and covered
+ * by provider_paths.xml's "media" `<external-path path=".">` entry, so it can be handed
+ * straight to a FileProvider for sharing (see PixelGramSettingsActivity) - and, best
+ * effort, the legacy public Downloads location this class originally used
+ * (`<Downloads>/PixelCaps/pixelcaps_dump.txt`, reachable with a plain `adb pull` on a
+ * debug build; not guaranteed to succeed on every Android version/build under scoped
+ * storage, which is why it's no longer the only copy). run() returns the
+ * external-files-dir File (or null if even that write failed) so a caller can act on it -
+ * e.g. hand it to a share intent.
  */
 public class PixelCapsDump {
 
     private static final String TAG = "PixelCaps";
 
-    public static void run(Context context) {
+    public static File run(Context context) {
         StringBuilder sb = new StringBuilder();
         line(sb, "=== PixelCaps dump: " + Build.MANUFACTURER + " " + Build.MODEL
                 + " (" + Build.DEVICE + "), API " + Build.VERSION.SDK_INT
                 + " (" + Build.VERSION.RELEASE + ") ===");
 
-        for (String cameraId : new String[]{"0", "1"}) {
-            try {
-                dumpCamera(context, cameraId, sb);
-            } catch (Exception e) {
-                line(sb, "camera " + cameraId + ": dump failed - " + e);
+        // Every physical camera the platform reports, not a hardcoded {"0", "1"} - "0"=rear,
+        // "1"=front is a Pixel convention (and even there, Camera2Session.create() never relies
+        // on it, it queries LENS_FACING), not a guaranteed one. A device with more than two
+        // cameras (an extra ultrawide/telephoto, common on non-Pixel phones) or a different ID
+        // scheme would otherwise silently go undumped, or worse, have the wrong camera labeled
+        // "front" - exactly the kind of Pixel-specific assumption this tool exists to surface,
+        // not repeat.
+        try {
+            CameraManager cm = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+            String[] cameraIds = cm.getCameraIdList();
+            line(sb, "CameraManager.getCameraIdList() = " + Arrays.toString(cameraIds));
+            for (String cameraId : cameraIds) {
+                try {
+                    dumpCamera(context, cameraId, sb);
+                } catch (Exception e) {
+                    line(sb, "camera " + cameraId + ": dump failed - " + e);
+                }
             }
+        } catch (Exception e) {
+            line(sb, "CameraManager.getCameraIdList() failed - " + e);
         }
 
         try {
@@ -82,8 +106,16 @@ public class PixelCapsDump {
             line(sb, "audio input-capability dump failed - " + e);
         }
 
+        try {
+            dumpAudioEffects(sb);
+        } catch (Exception e) {
+            line(sb, "audio effects dump failed - " + e);
+        }
+
         line(sb, "=== end PixelCaps dump ===");
-        writeToFile(sb.toString());
+        String content = sb.toString();
+        writeToPublicDownloadsBestEffort(content);
+        return writeToExternalFilesDir(context, content);
     }
 
     private static void line(StringBuilder sb, String s) {
@@ -96,6 +128,15 @@ public class PixelCapsDump {
     private static void dumpCamera(Context context, String cameraId, StringBuilder sb) throws CameraAccessException {
         CameraManager cm = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
         CameraCharacteristics c = cm.getCameraCharacteristics(cameraId);
+
+        // LENS_FACING first, before anything else - it's the only reliable way to tell which
+        // id is actually the front camera on a device whose id scheme isn't Pixel's "0"=rear/
+        // "1"=front (see the caller's own note on why cameraId isn't hardcoded anymore).
+        Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+        String facingName = facing == null ? "null" : facing == CameraCharacteristics.LENS_FACING_FRONT ? "FRONT"
+                : facing == CameraCharacteristics.LENS_FACING_BACK ? "BACK"
+                : facing == CameraCharacteristics.LENS_FACING_EXTERNAL ? "EXTERNAL" : "UNKNOWN(" + facing + ")";
+        line(sb, "camera" + cameraId + " LENS_FACING = " + facingName);
 
         line(sb, "--- camera " + cameraId + ": all keys (" + c.getKeys().size() + ") ---");
         for (CameraCharacteristics.Key<?> key : c.getKeys()) {
@@ -139,6 +180,32 @@ public class PixelCapsDump {
         logExplicit(sb, cameraId, "COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES", c, CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES);
         logExplicit(sb, cameraId, "SHADING_AVAILABLE_MODES", c, CameraCharacteristics.SHADING_AVAILABLE_MODES);
         logExplicit(sb, cameraId, "INFO_SUPPORTED_HARDWARE_LEVEL", c, CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+        // Everything below duplicates something already present in the all-keys dump above -
+        // kept explicit anyway (same reasoning as the rest of this block) so a reader (or a
+        // simple grep) doesn't have to hunt through several hundred lines of getKeys() output
+        // to find the handful of things that actually decide whether this app's features work
+        // on a new device. Also a safety net: getKeys() is only documented to include keys this
+        // camera "supports" - not guaranteed to include every key that would return non-null -
+        // so an explicit c.get() here can't be silently skipped the way an absent getKeys()
+        // entry could be.
+        logExplicit(sb, cameraId, "CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES", c, CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+        logExplicit(sb, cameraId, "SENSOR_INFO_ACTIVE_ARRAY_SIZE", c, CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+        logExplicit(sb, cameraId, "SENSOR_INFO_PIXEL_ARRAY_SIZE", c, CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
+        logExplicit(sb, cameraId, "NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES", c, CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES);
+        logExplicit(sb, cameraId, "EDGE_AVAILABLE_EDGE_MODES", c, CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES);
+        logExplicit(sb, cameraId, "CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES", c, CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES);
+        logExplicit(sb, cameraId, "CONTROL_MAX_REGIONS_AE", c, CameraCharacteristics.CONTROL_MAX_REGIONS_AE);
+        logExplicit(sb, cameraId, "STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES", c, CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES);
+        logExplicit(sb, cameraId, "LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION", c, CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION);
+        logExplicit(sb, cameraId, "SCALER_AVAILABLE_MAX_DIGITAL_ZOOM", c, CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+        // CONTROL_ZOOM_RATIO_RANGE is API 30+ (see Camera2Session.open()'s own SDK_INT guard on
+        // the same key) - SCALER_AVAILABLE_MAX_DIGITAL_ZOOM above is the pre-30 fallback and is
+        // present on every device regardless, so it's logged unconditionally above either way.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            logExplicit(sb, cameraId, "CONTROL_ZOOM_RATIO_RANGE", c, CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+        } else {
+            line(sb, "camera" + cameraId + " [explicit] CONTROL_ZOOM_RATIO_RANGE requires API 30, device is API " + Build.VERSION.SDK_INT + " - skipped (SCALER_AVAILABLE_MAX_DIGITAL_ZOOM above is the fallback)");
+        }
 
         // SCALER_STREAM_CONFIGURATION_MAP output sizes for the formats round video actually
         // uses: the camera->GL->encoder path targets a SurfaceTexture (opaque/implementation
@@ -455,6 +522,38 @@ public class PixelCapsDump {
         }
     }
 
+    // ---------------------------------------------------------------- audio effects
+
+    /**
+     * The three platform AudioEffects the app conditionally enables (NoiseSuppressor,
+     * AutomaticGainControl, AcousticEchoCanceler - see InstantCameraView's
+     * noiseSuppressionActuallyEnabled/agcActuallyEnabled/echoCancellationActuallyEnabled).
+     * isAvailable() is a static, no-AudioRecord-needed capability query - the real code path
+     * additionally calls create() against a live AudioRecord session and checks getEnabled()
+     * since a device can advertise availability but the platform can still decline to actually
+     * insert the effect for a given AudioSource (see FINDINGS.md's AGC-unavailability note) -
+     * that stronger check isn't repeated here since it needs a live capture session, which this
+     * class deliberately never starts (see class doc).
+     */
+    private static void dumpAudioEffects(StringBuilder sb) {
+        line(sb, "--- platform AudioEffects (static availability only - see FINDINGS.md for why the real code path also checks getEnabled() against a live session) ---");
+        try {
+            line(sb, "NoiseSuppressor.isAvailable() = " + android.media.audiofx.NoiseSuppressor.isAvailable());
+        } catch (Exception e) {
+            line(sb, "NoiseSuppressor.isAvailable() threw - " + e);
+        }
+        try {
+            line(sb, "AutomaticGainControl.isAvailable() = " + android.media.audiofx.AutomaticGainControl.isAvailable());
+        } catch (Exception e) {
+            line(sb, "AutomaticGainControl.isAvailable() threw - " + e);
+        }
+        try {
+            line(sb, "AcousticEchoCanceler.isAvailable() = " + android.media.audiofx.AcousticEchoCanceler.isAvailable());
+        } catch (Exception e) {
+            line(sb, "AcousticEchoCanceler.isAvailable() threw - " + e);
+        }
+    }
+
     // ---------------------------------------------------------------- MicrophoneInfo decoding
 
     /**
@@ -521,19 +620,51 @@ public class PixelCapsDump {
 
     // ---------------------------------------------------------------- output
 
-    private static void writeToFile(String content) {
+    /** Legacy location, kept for debug-build `adb pull` convenience - not the copy the share
+     * flow uses, and not guaranteed to succeed (scoped storage can reject a plain File write
+     * here depending on Android version/target-SDK legacy-storage opt-in), hence "best effort"
+     * and swallowing its own failure rather than surfacing it to the caller. */
+    private static void writeToPublicDownloadsBestEffort(String content) {
         try {
             File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "PixelCaps");
             if (!dir.exists() && !dir.mkdirs()) {
+                Log.w(TAG, "could not create legacy Downloads output dir " + dir);
+            }
+            File out = new File(dir, "pixelcaps_dump.txt");
+            try (PrintWriter writer = new PrintWriter(new FileWriter(out, false))) {
+                writer.print(content);
+            }
+            Log.d(TAG, "wrote dump to legacy Downloads location " + out.getAbsolutePath());
+        } catch (Exception e) {
+            Log.w(TAG, "failed to write legacy Downloads dump file (non-fatal, best-effort only)", e);
+        }
+    }
+
+    /** The copy the share flow (PixelGramSettingsActivity) actually uses - always writable, no
+     * permission needed, and covered by provider_paths.xml's external-path "media" entry (root
+     * "."), so FileProvider.getUriForFile() against this exact path always succeeds. Returns
+     * null on failure so the caller can tell the difference from "wrote fine". */
+    private static File writeToExternalFilesDir(Context context, String content) {
+        try {
+            File base = context.getExternalFilesDir(null);
+            if (base == null) {
+                Log.w(TAG, "getExternalFilesDir(null) returned null (no external storage mounted?) - dump not written to a shareable location");
+                return null;
+            }
+            File dir = new File(base, "PixelCaps");
+            if (!dir.exists() && !dir.mkdirs()) {
                 Log.w(TAG, "could not create output dir " + dir);
+                return null;
             }
             File out = new File(dir, "pixelcaps_dump.txt");
             try (PrintWriter writer = new PrintWriter(new FileWriter(out, false))) {
                 writer.print(content);
             }
             Log.d(TAG, "wrote dump to " + out.getAbsolutePath());
+            return out;
         } catch (Exception e) {
-            Log.w(TAG, "failed to write dump file", e);
+            Log.w(TAG, "failed to write shareable dump file", e);
+            return null;
         }
     }
 }

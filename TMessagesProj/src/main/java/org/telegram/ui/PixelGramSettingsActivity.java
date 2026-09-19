@@ -2,9 +2,11 @@ package org.telegram.ui;
 
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.media.audiofx.AcousticEchoCanceler;
 import android.media.audiofx.AutomaticGainControl;
 import android.media.audiofx.NoiseSuppressor;
+import android.net.Uri;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
@@ -18,7 +20,9 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
+import androidx.core.content.FileProvider;
 import androidx.recyclerview.widget.DefaultItemAnimator;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -31,7 +35,9 @@ import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.PixelGramUpdateChecker;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
+import org.telegram.messenger.Utilities;
 import org.telegram.messenger.camera.Camera2Session;
+import org.telegram.messenger.camera.PixelCapsDump;
 import org.telegram.messenger.camera.PixelGramSettings;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.AlertDialog;
@@ -46,6 +52,7 @@ import org.telegram.ui.Components.CubicBezierInterpolator;
 import org.telegram.ui.Components.LayoutHelper;
 import org.telegram.ui.Components.RecyclerListView;
 
+import java.io.File;
 import java.text.DateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -125,6 +132,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
 
     private int headerUpdatesRow;
     private int checkNowRow;
+    private int divider5Row;
+    private int headerDiagnosticsRow;
+    private int runCapsDumpRow;
     private int updateInfoRow;
 
     private int rowCount;
@@ -217,6 +227,10 @@ public class PixelGramSettingsActivity extends BaseFragment {
         headerUpdatesRow = rowCount++;
         checkNowRow = rowCount++;
         updateInfoRow = rowCount++;
+
+        divider5Row = rowCount++;
+        headerDiagnosticsRow = rowCount++;
+        runCapsDumpRow = rowCount++;
     }
 
     @Override
@@ -384,6 +398,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                 showResetDialog();
             } else if (position == checkNowRow) {
                 PixelGramUpdateChecker.checkForUpdates(true, () -> listAdapter.notifyItemChanged(updateInfoRow));
+            } else if (position == runCapsDumpRow) {
+                runCapabilityDumpAndShare();
             }
         });
 
@@ -865,6 +881,48 @@ public class PixelGramSettingsActivity extends BaseFragment {
         showDialog(builder.create());
     }
 
+    /**
+     * Self-service diagnostic for a tester who can't run adb - runs PixelCapsDump on a
+     * background thread (it constructs/releases a couple dozen AudioRecords and enumerates every
+     * CameraCharacteristics key across both cameras, easily a few hundred ms - not something to
+     * do on the UI thread from a tap), then hands the resulting file straight to the system
+     * share sheet so the only thing they have to do is pick a chat. No file-manager hunting, no
+     * adb, no debug build or debug logging required - PixelCapsDump.run() always logs to logcat
+     * (same "always reaches logcat" convention as PixelCameraLog/marker) and always writes to
+     * the app's own external-files-dir, which needs no permission on any Android version this
+     * app targets, unlike the legacy public-Downloads copy it also best-effort writes.
+     *
+     * FileProvider (not a raw file:// Uri) is required here regardless of debuggability -
+     * Android has forbidden exposing file:// Uris to other apps since API 24 (FileUriExposedException),
+     * so this isn't a release-build-specific concern, just correctness. provider_paths.xml
+     * already covers getExternalFilesDir(null) via its "media" external-path entry, so no
+     * manifest/provider_paths change was needed for this to work.
+     */
+    private void runCapabilityDumpAndShare() {
+        Toast.makeText(getParentActivity(), "Running capability dump...", Toast.LENGTH_SHORT).show();
+        Utilities.globalQueue.postRunnable(() -> {
+            File dumpFile = PixelCapsDump.run(ApplicationLoader.applicationContext);
+            AndroidUtilities.runOnUIThread(() -> {
+                if (getParentActivity() == null) return;
+                if (dumpFile == null) {
+                    Toast.makeText(getParentActivity(), "Capability dump failed to write - check logcat (tag PixelCaps)", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                try {
+                    Uri uri = FileProvider.getUriForFile(getParentActivity(), ApplicationLoader.getApplicationId() + ".provider", dumpFile);
+                    Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                    shareIntent.setType("text/plain");
+                    shareIntent.putExtra(Intent.EXTRA_STREAM, uri);
+                    shareIntent.putExtra(Intent.EXTRA_SUBJECT, "PixelCaps dump - " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL);
+                    shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    getParentActivity().startActivity(Intent.createChooser(shareIntent, "Share capability dump"));
+                } catch (Exception e) {
+                    Toast.makeText(getParentActivity(), "Could not open share sheet - " + e, Toast.LENGTH_LONG).show();
+                }
+            });
+        });
+    }
+
     private void showResetDialog() {
         AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
         builder.setTitle("Reset to Defaults");
@@ -1055,7 +1113,7 @@ public class PixelGramSettingsActivity extends BaseFragment {
                     || pos == speechEnhancementRow || pos == denoiserStrengthRow
                     || pos == trebleTiltRow
                     || pos == opusApplicationRow || pos == opusBitrateRow
-                    || pos == resetRow || pos == checkNowRow;
+                    || pos == resetRow || pos == checkNowRow || pos == runCapsDumpRow;
         }
 
         @Override
@@ -1101,6 +1159,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setText("Audio");
                     } else if (position == headerUpdatesRow) {
                         cell.setText("Updates");
+                    } else if (position == headerDiagnosticsRow) {
+                        cell.setText("Diagnostics");
                     }
                     break;
                 }
@@ -1189,6 +1249,8 @@ public class PixelGramSettingsActivity extends BaseFragment {
                         cell.setText("Reset to Defaults", false);
                     } else if (position == checkNowRow) {
                         cell.setText("Check Now", false);
+                    } else if (position == runCapsDumpRow) {
+                        cell.setText("Run Capability Dump", false);
                     }
                     break;
                 }
@@ -1260,9 +1322,9 @@ public class PixelGramSettingsActivity extends BaseFragment {
 
         @Override
         public int getItemViewType(int position) {
-            if (position == divider0Row || position == divider1Row || position == divider2Row || position == divider3Row || position == divider4Row) {
+            if (position == divider0Row || position == divider1Row || position == divider2Row || position == divider3Row || position == divider4Row || position == divider5Row) {
                 return TYPE_SHADOW;
-            } else if (position == headerCredentialsRow || position == headerRecordingRow || position == headerQualityRow || position == headerAudioRow || position == headerUpdatesRow) {
+            } else if (position == headerCredentialsRow || position == headerRecordingRow || position == headerQualityRow || position == headerAudioRow || position == headerUpdatesRow || position == headerDiagnosticsRow) {
                 return TYPE_HEADER;
             } else if (position == debugLoggingRow || position == faceAeMeteringRow || position == lowLightBoostRow || position == previewStabilizationRow
                     || position == noiseSuppressionRow || position == agcRow || position == echoCancellationRow || position == adaptiveGainRow
